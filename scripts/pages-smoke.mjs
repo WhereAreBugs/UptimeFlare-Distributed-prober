@@ -20,6 +20,7 @@ async function moduleFiles(directory) {
 }
 const modules = [{ type: 'ESModule', path: artifact }, ...(await moduleFiles(dirname(artifact))).filter(module => module.path !== artifact)]
 const mf = new Miniflare({
+  cf: { country: 'SG', city: 'Singapore', asn: 64512 },
   modules,
   modulesRoot: dirname(artifact),
   compatibilityDate: '2025-04-02',
@@ -57,21 +58,27 @@ try {
   await check('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://evil.test' }, body: JSON.stringify({ password }) }, 403)
   const login = await check('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test' }, body: JSON.stringify({ password }) }, 200)
   const cookie = login.headers.get('Set-Cookie').split(';')[0]
+  await check('/api/admin/config', { headers: { Cookie: cookie } }, 200, value => {
+    assert(value.probes.some(probe => probe.id === 'cloudflare'))
+  })
   const config = {
-    revision: 0, probes: [{ id: 'p1', name: 'Smoke probe' }], probeStaleAfterSeconds: 900,
-    monitors: [{ id: 'smoke', name: 'Smoke target', method: 'GET', target: 'https://private-smoke.example', probes: ['p1'], headers: { Authorization: 'private-target-secret' } }],
+    revision: 0, probes: [{ id: 'p1' }, { id: 'cloudflare' }], probeStaleAfterSeconds: 900,
+    monitors: [{ id: 'smoke', name: 'Smoke target', method: 'GET', target: 'https://private-smoke.example', probes: ['p1', 'cloudflare'], headers: { Authorization: 'private-target-secret' } }],
   }
   await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(config) }, 200)
   await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(config) }, 409)
   await check('/api/probes/config', { headers: { Authorization: `Bearer ${token}` } }, 200, value => assert.equal(value.monitors[0].target, 'https://private-smoke.example'))
   await check('/api/data', {}, 200, value => {
     assert.equal(value.unknown, 1)
+    assert.equal(value.monitors.smoke.total, 2)
+    assert.equal(value.monitors.smoke.probes[0].name, 'SG / Singapore · AS64512')
+    assert.equal(value.monitors.smoke.probes[1].id, 'cloudflare')
     assert(!JSON.stringify(value).includes('private-smoke'))
     assert(!JSON.stringify(value).includes('private-target-secret'))
   })
   const persisted = await db.prepare('SELECT COUNT(*) n FROM probe_samples').first()
   assert.equal(persisted.n, 0)
-  const report = { passed: true, actualPagesArtifact: artifact, processEnvSecretBridge: true, middlewareAndApiRoutes: true, gzipDecompressedBeforeAssignmentValidation: true, realD1Binding: true, authenticatedAdminAndDynamicConfiguration: true, checks: outcomes }
+  const report = { passed: true, actualPagesArtifact: artifact, processEnvSecretBridge: true, middlewareAndApiRoutes: true, gzipDecompressedBeforeAssignmentValidation: true, realD1Binding: true, authenticatedAdminAndDynamicConfiguration: true, trustedCloudflareGeographyAndASN: true, builtinCloudflareAssignment: true, checks: outcomes }
   await mkdir(join(root, 'bin'), { recursive: true })
   await writeFile(join(root, 'bin/pages-smoke-report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
