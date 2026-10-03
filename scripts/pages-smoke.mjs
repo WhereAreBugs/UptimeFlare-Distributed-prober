@@ -11,6 +11,7 @@ const serverDir = resolve(process.argv[2] || join(root, 'UptimeFlare'))
 const artifact = join(serverDir, '.vercel/output/static/_worker.js/index.js')
 const { Miniflare } = await import(pathToFileURL(join(serverDir, 'worker/node_modules/miniflare/dist/src/index.js')))
 const token = 'pages-smoke-independent-fixture-token-123456'
+const password = 'pages-smoke-admin-password-123456789'
 await access(artifact)
 async function moduleFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
@@ -24,7 +25,7 @@ const mf = new Miniflare({
   compatibilityDate: '2025-04-02',
   compatibilityFlags: ['nodejs_compat'],
   d1Databases: ['UPTIMEFLARE_D1'],
-  bindings: { PROBE_TOKENS: JSON.stringify({ p1: token }) },
+  bindings: { PROBE_TOKENS: JSON.stringify({ p1: token }), ADMIN_PASSWORD: password, ADMIN_SESSION_SECRET: 'pages-smoke-session-secret-at-least-32-characters' },
   serviceBindings: { ASSETS: () => new Response('Static asset omitted in API smoke test', { status: 404 }) },
 })
 const outcomes = []
@@ -34,6 +35,7 @@ async function check(path, init, status, assertion) {
   assert.equal(response.status, status, `${path}: ${text.slice(0, 1000)}`)
   if (assertion) assertion(JSON.parse(text))
   outcomes.push({ path, method: init?.method || 'GET', status })
+  return response
 }
 try {
   const db = await mf.getD1Database('UPTIMEFLARE_D1')
@@ -50,10 +52,26 @@ try {
     version: 1, batch_id: '0'.repeat(64), results: [{ monitor_id: 'foo_monitor', time: Math.floor(Date.now() / 1000), up: true, latency_ms: 1 }],
   })) }, 403, body => assert.equal(body.error, 'Probe is not assigned to this monitor'))
   await check('/api/probes/ingest', { headers: { Authorization: `Bearer ${token}` } }, 405)
-  await check('/api/data', {}, 500)
+  await check('/api/data', {}, 200, value => assert.equal(value.unknown, 1))
+  await check('/api/admin/config', {}, 401)
+  await check('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://evil.test' }, body: JSON.stringify({ password }) }, 403)
+  const login = await check('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test' }, body: JSON.stringify({ password }) }, 200)
+  const cookie = login.headers.get('Set-Cookie').split(';')[0]
+  const config = {
+    revision: 0, probes: [{ id: 'p1', name: 'Smoke probe' }], probeStaleAfterSeconds: 900,
+    monitors: [{ id: 'smoke', name: 'Smoke target', method: 'GET', target: 'https://private-smoke.example', probes: ['p1'], headers: { Authorization: 'private-target-secret' } }],
+  }
+  await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(config) }, 200)
+  await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(config) }, 409)
+  await check('/api/probes/config', { headers: { Authorization: `Bearer ${token}` } }, 200, value => assert.equal(value.monitors[0].target, 'https://private-smoke.example'))
+  await check('/api/data', {}, 200, value => {
+    assert.equal(value.unknown, 1)
+    assert(!JSON.stringify(value).includes('private-smoke'))
+    assert(!JSON.stringify(value).includes('private-target-secret'))
+  })
   const persisted = await db.prepare('SELECT COUNT(*) n FROM probe_samples').first()
   assert.equal(persisted.n, 0)
-  const report = { passed: true, actualPagesArtifact: artifact, processEnvSecretBridge: true, middlewareAndApiRoutes: true, gzipDecompressedBeforeAssignmentValidation: true, realD1Binding: true, checks: outcomes }
+  const report = { passed: true, actualPagesArtifact: artifact, processEnvSecretBridge: true, middlewareAndApiRoutes: true, gzipDecompressedBeforeAssignmentValidation: true, realD1Binding: true, authenticatedAdminAndDynamicConfiguration: true, checks: outcomes }
   await mkdir(join(root, 'bin'), { recursive: true })
   await writeFile(join(root, 'bin/pages-smoke-report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))

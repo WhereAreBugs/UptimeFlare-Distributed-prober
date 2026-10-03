@@ -8,3 +8,6 @@ coverage.out
 .env
 .DS_Store
 .wrangler/
+.deployment/
+__pycache__/
+*.pyc

@@ -1,4 +1,4 @@
-# Light Prober
+# UptimeFlare Distributed Prober
 
 Go 编写的跨平台在线性探针，配合改造后的 [UptimeFlare](https://github.com/lyc8503/UptimeFlare) 使用。支持 TCP、HTTP、HTTPS、连接阶段归因、断网落盘补传、gzip 批量上传和可选 OpenTelemetry 指标。
 
@@ -132,3 +132,11 @@ node scripts/e2e.mjs ./UptimeFlare
 联调用真实 Go 进程和 Miniflare D1，覆盖断网、进程强制退出、缓存启动、丢失确认后的重传与多探针汇总。测试证据和本机性能测量见 `docs/validation.md`。
 
 服务端执行 `npx @cloudflare/next-on-pages` 后，可通过 `node scripts/pages-smoke.mjs ./UptimeFlare` 检查实际 Pages 构建产物的密钥绑定、鉴权和 gzip 路由。资源测量脚本 `node scripts/resource-smoke.mjs` 适用于 Linux/macOS；所有验证只使用本地测试目标。
+
+## 发布与部署管理
+
+公开仓库：`WhereAreBugs/UptimeFlare-Distributed-prober`，服务端：`WhereAreBugs/UptimeFlare-Distributed`。GitHub Actions 在 Linux/macOS/Windows 验证探针并产出跨平台二进制；服务端自动部署使用其仓库的 Actions Secrets。
+
+本地 `python3 scripts/configure-deployment.py cloudflare` 通过隐藏输入保存部署凭据到被忽略的 `.deployment/cloudflare.json`，权限 0600；`admin` 生成并保留随机管理员密码与会话密钥；`telemetry` 保存独立遥测鉴权。所有真实凭据均不得提交到仓库。
+
+macOS 的 TUN 可能拦截 SSH；`scripts/ssh-physical.py` 可作为 SSH ProxyCommand 绑定指定物理网卡，不改变系统全局路由。仅用于部署机，不影响跨平台探针本身。
