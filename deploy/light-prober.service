@@ -1,0 +1,21 @@
+[Unit]
+Description=Light Prober uptime probe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=/etc/light-prober.env
+ExecStart=/usr/local/bin/light-prober --data-dir /var/lib/light-prober
+StateDirectory=light-prober
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

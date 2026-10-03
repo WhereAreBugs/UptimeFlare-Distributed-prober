@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+/** Smoke test the actual next-on-pages deployment artifact and its environment bridge. */
+import assert from 'node:assert/strict'
+import { readFile, access, writeFile, mkdir, readdir } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { gzipSync } from 'node:zlib'
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const serverDir = resolve(process.argv[2] || join(root, 'UptimeFlare'))
+const artifact = join(serverDir, '.vercel/output/static/_worker.js/index.js')
+const { Miniflare } = await import(pathToFileURL(join(serverDir, 'worker/node_modules/miniflare/dist/src/index.js')))
+const token = 'pages-smoke-independent-fixture-token-123456'
+await access(artifact)
+async function moduleFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true })
+  const nested = await Promise.all(entries.map(entry => entry.isDirectory() ? moduleFiles(join(directory, entry.name)) : entry.name.endsWith('.js') ? [{ type: 'ESModule', path: join(directory, entry.name) }] : []))
+  return nested.flat()
+}
+const modules = [{ type: 'ESModule', path: artifact }, ...(await moduleFiles(dirname(artifact))).filter(module => module.path !== artifact)]
+const mf = new Miniflare({
+  modules,
+  modulesRoot: dirname(artifact),
+  compatibilityDate: '2025-04-02',
+  compatibilityFlags: ['nodejs_compat'],
+  d1Databases: ['UPTIMEFLARE_D1'],
+  bindings: { PROBE_TOKENS: JSON.stringify({ p1: token }) },
+  serviceBindings: { ASSETS: () => new Response('Static asset omitted in API smoke test', { status: 404 }) },
+})
+const outcomes = []
+async function check(path, init, status, assertion) {
+  const response = await mf.dispatchFetch(`https://pages.test${path}`, init)
+  const text = await response.text()
+  assert.equal(response.status, status, `${path}: ${text.slice(0, 1000)}`)
+  if (assertion) assertion(JSON.parse(text))
+  outcomes.push({ path, method: init?.method || 'GET', status })
+}
+try {
+  const db = await mf.getD1Database('UPTIMEFLARE_D1')
+  const schema = await readFile(join(serverDir, 'init.sql'), 'utf8')
+  for (const sql of schema.split(';').filter(sql => sql.trim())) await db.prepare(sql).run()
+  await check('/api/probes/config', { headers: { Authorization: `Bearer ${token}` } }, 200, config => {
+    assert.equal(config.version, 1)
+    assert.equal(config.probe_id, 'p1')
+    assert.deepEqual(config.monitors, [])
+    assert(!JSON.stringify(config).includes(token))
+  })
+  await check('/api/probes/config', {}, 401)
+  await check('/api/probes/ingest', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' }, body: gzipSync(JSON.stringify({
+    version: 1, batch_id: '0'.repeat(64), results: [{ monitor_id: 'foo_monitor', time: Math.floor(Date.now() / 1000), up: true, latency_ms: 1 }],
+  })) }, 403, body => assert.equal(body.error, 'Probe is not assigned to this monitor'))
+  await check('/api/probes/ingest', { headers: { Authorization: `Bearer ${token}` } }, 405)
+  await check('/api/data', {}, 500)
+  const persisted = await db.prepare('SELECT COUNT(*) n FROM probe_samples').first()
+  assert.equal(persisted.n, 0)
+  const report = { passed: true, actualPagesArtifact: artifact, processEnvSecretBridge: true, middlewareAndApiRoutes: true, gzipDecompressedBeforeAssignmentValidation: true, realD1Binding: true, checks: outcomes }
+  await mkdir(join(root, 'bin'), { recursive: true })
+  await writeFile(join(root, 'bin/pages-smoke-report.json'), JSON.stringify(report, null, 2) + '\n')
+  console.log(JSON.stringify(report, null, 2))
+} finally {
+  await mf.dispose()
+}

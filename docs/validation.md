@@ -1,0 +1,50 @@
+# 验证记录
+
+日期：2026-10-03，Asia/Singapore。环境：Apple M2 / macOS arm64，Go 1.26.3，Node 24.3.0。服务端基于 UptimeFlare `a5670e51cbc167bf3610fce4d3389dd00141d729` 改造。
+
+## 已通过
+
+- Go 标准版：`go test -race ./cmd/... ./internal/...`，包括真实本机 DNS/TCP/HTTP/TLS、连接阶段超时、正文边界、持久化、损坏校验、锁、队列容量、重启与 ACK 验证。
+- Go 最小版：`go test -tags nootel ./cmd/... ./internal/...`；`go vet` 通过。
+- OpenTelemetry：本地 Collector 接收到 OTLP protobuf 与 gzip 指标，包含 `probe.id`，未包含监控 ID/错误正文；禁用路径没有 SDK。
+- Worker：35 项测试通过，其中 13 项使用本地 Miniflare D1，22 项检查原生错误归因及监控流程；类型检查通过。
+- 公共 API/前端逻辑：11 项测试通过；Next ESLint、TypeScript、生产构建与 Cloudflare Pages 打包通过。
+- Worker 发布 dry-run 通过，产物约 86 KiB，gzip 约 21 KiB。
+- 实际生成的 Pages Worker 产物在 Miniflare 中通过认证配置、401、gzip 解压后权限拒绝、405 和空 D1 状态检查，验证 `process.env` secret 桥接及 Next 路由；未授权写入数为 0。
+- 浏览器检查实际组件：主机汇总、独立探针、阶段统计、五分钟历史与失败表格能展开；384px 视口未产生页面横向溢出，没有浏览器错误。
+- 无 CGO 的标准版与最小版均成功构建 Linux amd64/arm64/ARMv7、macOS amd64/arm64、Windows amd64/arm64、FreeBSD amd64，共 16 个二进制。
+
+## 完整进程联调
+
+`node scripts/e2e.mjs ./UptimeFlare` 使用实际 Go 二进制、本地 Cloudflare Worker 运行时及 Miniflare D1；不是 mock 的内存存储。最后一次结果：
+
+| 验证项 | 结果 |
+| --- | --- |
+| 断网后 SIGKILL 的队列 | 10 条仍在磁盘 |
+| 断网缓存启动继续采集 | 重启后 14 条 |
+| 确认响应丢失后重传 | 去重，未重复计数 |
+| 所有积压身份 | 均出现在服务端持久记录 |
+| 原始记录/累计统计/五分钟统计 | 均为 84 条 |
+| 恢复并停止后两个本地队列 | 均为 0 |
+| 两探针 HTTP 汇总 | up |
+| 两探针关闭端口的 TCP 汇总 | down，阶段 tcp |
+| 本次短批次流量 | 12,353 → 5,189 字节，减少 58.0% |
+
+联调发现了同秒崩溃重启导致重复样本身份、整批被拒绝的问题。修复为队列原子保存最大已采集时间，即使 ACK 清空后也保留；重启或时钟回退后等待真实时间超过游标，不生成未来时间。单元测试与原故障联调均通过。
+
+## 资源测量
+
+`node scripts/resource-smoke.mjs`，16 个本地 HTTP 204 目标、每秒一轮、持续 8 秒，关闭遥测，每版 128 个独立样本。这是短时本机测量，不是生产容量承诺：
+
+| 版本 | 峰值 RSS | 进程 CPU 时间 | 请求体字节 | gzip 字节 |
+| --- | --- | --- | --- | --- |
+| 标准版 | 23,952 KiB（23.4 MiB） | 0.13 秒 | 10,871 | 2,921 |
+| nootel | 19,808 KiB（19.3 MiB） | 0.20 秒 | 10,849 | 2,936 |
+
+gzip 在该场景减少约 73% 的请求体字节。测量不包含 TLS/HTTP 包头和 Collector 流量。默认一分钟检测、五分钟推送的运行频率比该测量低，实际占用取决于目标、响应大小、失败阶段与离线积压。
+
+探测核心基准（本机独立运行）：复用本地 HTTP 约 36.3µs、6.5KiB/88 次分配；TCP 约 57.4µs、1.8KiB/31 次分配。持久化 Append+Peek+Ack 约 22.7ms，包含两次同步事务，受存储设备显著影响；没有通过关闭 fsync 来得到不可靠的性能数字。
+
+## 尚未实机验证
+
+没有发布到 Cloudflare 账号，也没有向 GitHub 远端推送。Terraform binding 按官方 provider schema 配置，当前没有 Terraform 运行环境与账号凭据，未执行远端 plan/apply。Linux、Windows、FreeBSD 当前为交叉编译验证，实际目标运行与长时间资源曲线仍需在部署环境验收。Dockerfile 与 systemd 示例已提供，未在生产主机运行。
