@@ -75,3 +75,8 @@ gzip 在该场景减少约 73% 的请求体字节。测量不包含 TLS/HTTP 包
 服务端提交 `2209d02` 的[验证流程](https://github.com/WhereAreBugs/UptimeFlare-Distributed/actions/runs/37124626652)和[部署流程](https://github.com/WhereAreBugs/UptimeFlare-Distributed/actions/runs/37124626661)均成功。上线后通过管理 API 将测试目标分配给 `probe-1`、`probe-2`、`cloudflare`，配置版本为 2；保留旧目标、历史与独立令牌。
 
 生产 D1 直接查询已确认 Cloudflare cron 产生真实样本，三类探针的原始记录、累计 checks/failures 与五分钟桶总数一致。公开 API 与浏览器均显示 3/3 可达，独立探针自动名称为 `JP / Tokyo · AS61112` 与 `MO / Macau · AS61112`；Cloudflare 的最近节点在验收期间出现 IAD 与 SIN，默认名称为相应节点加 AS13335。Go 程序无需升级，不额外请求第三方地理位置服务。
+## 2026-10-04 Webhook 通知模板与配置页
+
+服务端新增可复用 Webhook 模板、目标选择、故障与恢复通知、D1 事件队列和失败重试。配置页隐藏内部标识，目标与模板自动分配唯一标识并保留现有历史；指定文案已精简。
+
+60 个 Worker 测试及 15 个页面/API 测试通过。通知测试使用真实 Miniflare D1，并通过本地 HTTP 接收端验证 JSON、查询参数、表单、鉴权头与字符串替换；覆盖并发去重、原子回滚、失败重试及顺序、关闭通知取消排队、失联与旧补传不单独触发、重定向拒绝与超时。实际 next-on-pages 产物另验证模板保存、匿名拒绝、配置冲突、重复标识处理，以及私密通知配置不下发给探针或公开 API。

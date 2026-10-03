@@ -63,11 +63,19 @@ try {
   })
   const config = {
     revision: 0, probes: [{ id: 'p1' }, { id: 'cloudflare' }], probeStaleAfterSeconds: 900,
-    monitors: [{ id: 'smoke', name: 'Smoke target', method: 'GET', target: 'https://private-smoke.example', probes: ['p1', 'cloudflare'], headers: { Authorization: 'private-target-secret' } }],
+    notificationTemplates: [{ id: 'smoke-hook', name: 'Smoke webhook', type: 'webhook', webhook: { url: 'https://private-notification.example/secret', payloadType: 'json', headers: { Authorization: 'private-notification-secret' }, payload: { text: '$MSG' } } }],
+    monitors: [{ id: 'smoke', name: 'Smoke target', method: 'GET', target: 'https://private-smoke.example', probes: ['p1', 'cloudflare'], headers: { Authorization: 'private-target-secret' }, notificationTemplateId: 'smoke-hook' }],
   }
-  await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(config) }, 200)
+  await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(config) }, 200, value => {
+    assert.equal(value.notificationTemplates[0].webhook.headers.Authorization, 'private-notification-secret')
+    assert.equal(value.monitors[0].notificationTemplateId, 'smoke-hook')
+  })
   await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(config) }, 409)
-  await check('/api/probes/config', { headers: { Authorization: `Bearer ${token}` } }, 200, value => assert.equal(value.monitors[0].target, 'https://private-smoke.example'))
+  await check('/api/probes/config', { headers: { Authorization: `Bearer ${token}` } }, 200, value => {
+    assert.equal(value.monitors[0].target, 'https://private-smoke.example')
+    assert(!JSON.stringify(value).includes('private-notification'))
+    assert(!JSON.stringify(value).includes('notificationTemplateId'))
+  })
   await check('/api/data', {}, 200, value => {
     assert.equal(value.unknown, 1)
     assert.equal(value.monitors.smoke.total, 2)
@@ -75,10 +83,16 @@ try {
     assert.equal(value.monitors.smoke.probes[1].id, 'cloudflare')
     assert(!JSON.stringify(value).includes('private-smoke'))
     assert(!JSON.stringify(value).includes('private-target-secret'))
+    assert(!JSON.stringify(value).includes('private-notification'))
+  })
+  await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify({ ...config, revision: 1, monitors: [...config.monitors, ...config.monitors], notificationTemplates: [...config.notificationTemplates, { ...config.notificationTemplates[0], id: undefined }] }) }, 200, value => {
+    assert.equal(value.monitors[0].id, 'smoke')
+    assert.notEqual(value.monitors[1].id, 'smoke')
+    assert.notEqual(value.notificationTemplates[0].id, value.notificationTemplates[1].id)
   })
   const persisted = await db.prepare('SELECT COUNT(*) n FROM probe_samples').first()
   assert.equal(persisted.n, 0)
-  const report = { passed: true, actualPagesArtifact: artifact, processEnvSecretBridge: true, middlewareAndApiRoutes: true, gzipDecompressedBeforeAssignmentValidation: true, realD1Binding: true, authenticatedAdminAndDynamicConfiguration: true, trustedCloudflareGeographyAndASN: true, builtinCloudflareAssignment: true, checks: outcomes }
+  const report = { passed: true, actualPagesArtifact: artifact, processEnvSecretBridge: true, middlewareAndApiRoutes: true, gzipDecompressedBeforeAssignmentValidation: true, realD1Binding: true, authenticatedAdminAndDynamicConfiguration: true, trustedCloudflareGeographyAndASN: true, builtinCloudflareAssignment: true, webhookTemplatePersistenceAndIsolation: true, automaticIdentityConflictResolution: true, checks: outcomes }
   await mkdir(join(root, 'bin'), { recursive: true })
   await writeFile(join(root, 'bin/pages-smoke-report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
