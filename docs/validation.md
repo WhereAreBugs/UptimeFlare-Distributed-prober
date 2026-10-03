@@ -90,3 +90,11 @@ Go race、nootel、vet 均通过；74 个 Worker 测试、18 个页面/API 测�
 `node scripts/remote-config-smoke.mjs ./UptimeFlare` 使用最终 Go 二进制、实际管理接口及 Worker/D1，耗时 62.75 秒。60 秒目标两次执行相隔 59.997 秒，120 秒和默认 300 秒目标均只执行一次；远端周期覆盖 CLI 的 1 秒回退值。真实保存配置后，新增目标、重新分配、URL 与 100 毫秒超时无需重启即生效，400 毫秒响应在约 101.5 毫秒被中止。此联调将配置拉取设为 1 秒用于加速验收，生产仍为默认 5 分钟。
 
 断网进程联调再次通过：崩溃时磁盘保留 8 条，缓存启动继续积压到 12 条，恢复后 D1 持久化 80 条；确认响应丢失后的重传未重复计数，两个队列均清空。测试显式验证接收端默认 300 秒，仅在加速场景模拟旧协议省略周期；新协议真实周期由上述独立联调验证。22 个 gzip 批次的正文由 11923 字节降至 5401 字节。
+
+服务端提交 [`b6798bf`](https://github.com/WhereAreBugs/UptimeFlare-Distributed/commit/b6798bf9a6090dba8122c7f644c6c5048c8a50ca) 的[部署](https://github.com/WhereAreBugs/UptimeFlare-Distributed/actions/runs/37147413534)与[验证](https://github.com/WhereAreBugs/UptimeFlare-Distributed/actions/runs/37147413538)成功。探针提交 [`2f773ff`](https://github.com/WhereAreBugs/UptimeFlare-Distributed-prober/commit/2f773ff45d40f4b3dd718ed13e207d2f25265639) 的[三平台测试与 16 个交叉构建](https://github.com/WhereAreBugs/UptimeFlare-Distributed-prober/actions/runs/37147415740)全部成功。
+
+两台实机均已原子替换二进制并重启，版本为 `2f773ff`，SHA256 为 `abc44fc83f409668fe9afe24f5cc8fa8097eeeb27d9781d541e9d9b267521f24`；原二进制保留备份，队列、环境文件与缓存保留，systemd 运行与开机自启正常。启动日志确认遥测仍开启、默认周期与上传上限均为 300 秒，新进程未见 WARN/ERROR。认证配置从每台探针的实际网络出口获取，以保持地理位置自动命名正确。
+
+2026-10-04 03:27（Asia/Singapore）直接查询生产 D1，`probe-1` 最近两个样本为 1791055618/1791055318，`probe-2` 为 1791055622/1791055322，Cloudflare 为 1791055500/1791055200，间隔均为 300 秒。原始样本、累计统计与五分钟桶的 checks/failures 一致；公开 API 三探针均 fresh/up，汇总 3/3。部署前后的保存配置哈希一致、revision 保持 3，测试目标原有显式 10000 毫秒超时保留。
+
+生产浏览器确认可选周期和超时、各探针执行目标摘要、全局离线字段移除，以及现有标签页和汇总历史保留。未保存的草稿把周期改成 60 秒并清空超时后，各探针摘要显示 60 秒/5 秒；刷新丢弃草稿并恢复原有配置，未用测试值覆盖生产配置。
