@@ -7,7 +7,7 @@
 - Go 标准版：`go test -race ./cmd/... ./internal/...`，包括真实本机 DNS/TCP/HTTP/TLS、连接阶段超时、正文边界、持久化、损坏校验、锁、队列容量、重启与 ACK 验证。
 - Go 最小版：`go test -tags nootel ./cmd/... ./internal/...`；`go vet` 通过。
 - OpenTelemetry：本地 Collector 接收到 OTLP protobuf 与 gzip 指标，包含 `probe.id`，未包含监控 ID/错误正文；禁用路径没有 SDK。
-- Worker：35 项测试通过，其中 13 项使用本地 Miniflare D1，22 项检查原生错误归因及监控流程；类型检查通过。
+- Worker：42 项测试通过，其中 20 项使用本地 Miniflare D1 验证探针和管理配置，22 项检查原生错误归因及监控流程；类型检查通过。
 - 公共 API/前端逻辑：11 项测试通过；Next ESLint、TypeScript、生产构建与 Cloudflare Pages 打包通过。
 - Worker 发布 dry-run 通过，产物约 86 KiB，gzip 约 21 KiB。
 - 实际生成的 Pages Worker 产物在 Miniflare 中通过认证配置、401、gzip 解压后权限拒绝、405 和空 D1 状态检查，验证 `process.env` secret 桥接及 Next 路由；未授权写入数为 0。
@@ -45,6 +45,23 @@ gzip 在该场景减少约 73% 的请求体字节。测量不包含 TLS/HTTP 包
 
 探测核心基准（本机独立运行）：复用本地 HTTP 约 36.3µs、6.5KiB/88 次分配；TCP 约 57.4µs、1.8KiB/31 次分配。持久化 Append+Peek+Ack 约 22.7ms，包含两次同步事务，受存储设备显著影响；没有通过关闭 fsync 来得到不可靠的性能数字。
 
-## 尚未实机验证
+## 生产部署验收
 
-没有发布到 Cloudflare 账号，也没有向 GitHub 远端推送。Terraform binding 按官方 provider schema 配置，当前没有 Terraform 运行环境与账号凭据，未执行远端 plan/apply。Linux、Windows、FreeBSD 当前为交叉编译验证，实际目标运行与长时间资源曲线仍需在部署环境验收。Dockerfile 与 systemd 示例已提供，未在生产主机运行。
+2026-10-03 已建立并推送两个公开仓库：
+
+- [UptimeFlare-Distributed](https://github.com/WhereAreBugs/UptimeFlare-Distributed)：Cloudflare Pages、定时 Worker、D1，通过 Actions 自动部署。
+- [UptimeFlare-Distributed-prober](https://github.com/WhereAreBugs/UptimeFlare-Distributed-prober)：Go 探针、三平台测试和 16 个无 CGO 构建。
+
+[服务端部署](https://github.com/WhereAreBugs/UptimeFlare-Distributed/actions/runs/37104462898)与[服务端验证](https://github.com/WhereAreBugs/UptimeFlare-Distributed/actions/runs/37104462891)均成功；[探针 CI](https://github.com/WhereAreBugs/UptimeFlare-Distributed-prober/actions/runs/37103998407)在 Linux、macOS、Windows 上运行 race、nootel 测试与 vet，全部通过，跨平台构建产物也已上传。
+
+[公开状态页](https://status.catxxp123.top/) 已绑定自定义域名。两台 Debian 13 / Linux amd64 实机通过 systemd `DynamicUser` 启动并设置开机自启，数据目录 `/var/lib/light-prober`，环境文件 0600，本地队列和缓存配置均为 0600。使用默认一分钟探测、五分钟批量上传，没有为验收缩短间隔。
+
+首批真实验收直接查询生产 D1：两台探针各有 5 条测试站点记录，均成功；原始样本、累计 checks 与五分钟 bucket checks 均相等。公开 API 显示两台探针 fresh/up，浏览器可展开每台的延迟、累计检查及五分钟历史。后续部署保留管理配置 revision 1。
+
+生产管理接口已验证匿名读取 401、正确密码登录、配置读取与保存、公开配置隐藏目标、注销。浏览器管理入口展示登录表单且无 console 错误。真实 Pages 构建产物的本地验收另覆盖安全 Cookie、跨来源写入拒绝、并发版本冲突以及探针获取修改后配置。
+
+两台实机已开启一分钟一次的 gzip OTLP metrics 导出，运行日志未见导出错误。另在两台主机上以现有凭据运行同一遥测代码的一次性检查，使用独立 `service.name` 与 `probe.id`，非空指标导出均成功；未改动生产探针进程与数据队列。OpenObserve 查询 API 对提供的凭据返回 401，因此此处只确认导出被接收，尚未验证 OpenObserve 的持久化查询结果。
+
+实机验收修复了 systemd 无 HOME 环境下过早读取配置目录的问题。Windows CI 修复了真实 Winsock 错误码归类，以及文件权限和计时粒度的测试假设。D1 测试按持久记录比较，排除每次查询变化的耗时元数据；保留了完整数据不变的断言。
+
+启动后约六分钟，两台 systemd cgroup 的 MemoryCurrent 分别约 11.2 MiB、12.2 MiB，遥测开启；这是单目标短期观测，尚未建立长期生产资源曲线。FreeBSD 为交叉编译验证；Docker 示例尚未在生产运行。

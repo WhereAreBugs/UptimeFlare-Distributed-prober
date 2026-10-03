@@ -108,7 +108,7 @@ go vet ./cmd/... ./internal/...
 sh scripts/build.sh
 ```
 
-构建脚本输出 Linux amd64/arm64/ARMv7、macOS amd64/arm64、Windows amd64/arm64、FreeBSD amd64 两种版本。CI 在 Linux/macOS/Windows 上执行测试。当前本机验证为 macOS arm64；其他系统的编译成功不能代替实际目标运行验收。
+构建脚本输出 Linux amd64/arm64/ARMv7、macOS amd64/arm64、Windows amd64/arm64、FreeBSD amd64 两种版本。CI 在 Linux/macOS/Windows 上执行测试，生产部署另验证了两台 Linux amd64 实机；其余架构的编译成功不能代替实际目标运行验收。
 
 Linux systemd 示例在 `deploy/light-prober.service`，通过 `DynamicUser`、`StateDirectory` 和只读系统目录运行。把二进制放到 `/usr/local/bin/light-prober`，将 `deploy/light-prober.env.example` 复制成 `/etc/light-prober.env` 并设置真实值、0600 权限，再安装并启用 service。Windows 可通过任务计划程序在专用账户下运行，macOS 可通过 launchd 保持运行；普通进程版本无需平台专用服务依赖。
 
@@ -131,11 +131,13 @@ node scripts/e2e.mjs ./UptimeFlare
 
 联调用真实 Go 进程和 Miniflare D1，覆盖断网、进程强制退出、缓存启动、丢失确认后的重传与多探针汇总。测试证据和本机性能测量见 `docs/validation.md`。
 
-服务端执行 `npx @cloudflare/next-on-pages` 后，可通过 `node scripts/pages-smoke.mjs ./UptimeFlare` 检查实际 Pages 构建产物的密钥绑定、鉴权和 gzip 路由。资源测量脚本 `node scripts/resource-smoke.mjs` 适用于 Linux/macOS；所有验证只使用本地测试目标。
+服务端执行 `npx @cloudflare/next-on-pages` 后，可通过 `node scripts/pages-smoke.mjs ./UptimeFlare` 检查实际 Pages 构建产物的密钥绑定、鉴权、网页配置管理和 gzip 路由。资源测量脚本 `node scripts/resource-smoke.mjs` 适用于 Linux/macOS，使用本地测试目标。生产数据验收与这些本地测试分别记录在 `docs/validation.md`。
 
 ## 发布与部署管理
 
 公开仓库：`WhereAreBugs/UptimeFlare-Distributed-prober`，服务端：`WhereAreBugs/UptimeFlare-Distributed`。GitHub Actions 在 Linux/macOS/Windows 验证探针并产出跨平台二进制；服务端自动部署使用其仓库的 Actions Secrets。
+
+日常修改监控目标可通过已部署状态页的 `/admin` 登录完成；操作方法、实机路径、日志和升级步骤见 [运维说明](docs/operations.md)。
 
 本地 `python3 scripts/configure-deployment.py cloudflare` 通过隐藏输入保存部署凭据到被忽略的 `.deployment/cloudflare.json`，权限 0600；`admin` 生成并保留随机管理员密码与会话密钥；`telemetry` 保存独立遥测鉴权。所有真实凭据均不得提交到仓库。
 

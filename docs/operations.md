@@ -1,0 +1,58 @@
+# 部署与日常维护
+
+## 状态页与配置管理
+
+- 公开页面：https://status.catxxp123.top/
+- 网页管理：https://status.catxxp123.top/admin
+- 服务端仓库：https://github.com/WhereAreBugs/UptimeFlare-Distributed
+- 探针仓库：https://github.com/WhereAreBugs/UptimeFlare-Distributed-prober
+
+管理密码由部署时随机生成，保存在部署机被 Git 忽略的 `.deployment/admin.json` 的 `password` 字段。生产密码和会话密钥同时保存在服务端仓库 Actions Secrets。真实凭据不得写入 issue、提交或公开文档。
+
+登录后可以添加、修改监控目标，选择 HTTP/HTTPS 或 TCP 检测，设置超时和分配探针，也可修改探针显示名称与地区。高级配置可设置 HTTP 方法、请求头、正文、预期状态码及关键词。保存至 D1 后探针默认在五分钟内刷新配置，无需重新发布代码。
+
+首批探针 ID 为 `probe-1`、`probe-2`；测试站点分配给两者。界面中的探针 ID 与令牌映射固定，名称和地区可以在网页调整。多人同时编辑时版本冲突会拒绝保存，重新加载后再修改。删除监控或取消分配前，先确认对应探针没有离线积压。
+
+公开页面可展开监控汇总，再展开每台探针的独立结果。unknown 表示没有数据或超过十五分钟未收到新的结果；degraded 表示结果混合或部分探针没有新数据。探测失败会按 DNS、TCP、TLS、HTTP、正文等阶段展示。
+
+## Linux 探针
+
+| 项目 | 路径或默认值 |
+| --- | --- |
+| 二进制 | `/usr/local/bin/light-prober` |
+| systemd 服务 | `light-prober.service`，已设置开机自启 |
+| 环境配置 | `/etc/light-prober.env`，仅 root 可读写 |
+| 队列与配置缓存 | `/var/lib/light-prober/queue.db`、`config.json` |
+| 检测 / 批量上传 / 配置刷新 | 1 分钟 / 5 分钟 / 5 分钟 |
+| 遥测 | 已开启，1 分钟导出一次 OTLP metrics |
+
+服务以 systemd 的临时用户运行；StateDirectory 在部分发行版显示为指向 `/var/lib/private/light-prober` 的链接，这是 systemd 的正常行为。
+
+检查服务与近期日志：
+
+```sh
+systemctl status light-prober --no-pager
+journalctl -u light-prober --since '15 minutes ago' --no-pager
+systemctl show light-prober -p MemoryCurrent -p CPUUsageNSec
+```
+
+上传失败时队列保留并退避重试。配置获取失败时可使用缓存继续采集；鉴权失败会暂停旧配置。不要删除队列绕过上传错误，先检查令牌、目标分配、磁盘和到状态页的连通性。
+
+升级时从探针仓库 Actions 的 `binaries` 下载对应平台**标准版**，核对文件来源后上传到主机。保留环境文件与数据目录，再用同一文件系统的临时名称替换二进制：
+
+```sh
+install -m 0755 /path/to/new-binary /usr/local/bin/light-prober.next
+mv /usr/local/bin/light-prober.next /usr/local/bin/light-prober
+systemctl restart light-prober
+systemctl status light-prober --no-pager
+```
+
+仓库推送会自动验证与构建探针；探针主机升级通过上述安装流程完成。服务端 `main` 推送会自动部署 Pages、Worker 和 D1；不会覆盖已经通过网页保存的配置。
+
+## OpenObserve
+
+探针发送性能、队列、检查与上传指标，使用 metrics 管道。当前 endpoint 为 `https://oobs.mac.catxxp123.top:9999/api/default/v1/metrics`，鉴权通过 `/etc/light-prober.env` 中的 `OTEL_EXPORTER_OTLP_HEADERS` 设置。该路径是 metrics 的完整 OTLP HTTP endpoint；仅配置 traces 管道无法接收这些指标。
+
+查询时使用 `service.name=light-prober`，按 `probe.id` 区分真实探针。指标目录见 README；OpenObserve 可将名称中的点规范化为下划线。一次性部署检查使用不同的 `service.name=light-prober-deployment-verification`，可过滤排除。
+
+关闭遥测需从 systemd 的 ExecStart 移除 `--telemetry --telemetry-interval 1m`，执行 `systemctl daemon-reload` 并重启服务；保留本地队列。默认关闭遥测的程序不会初始化 SDK 或产生导出请求。开启遥测的部署应使用标准版二进制，`nootel` 版不接受该开关。
