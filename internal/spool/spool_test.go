@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -147,6 +148,10 @@ func TestExclusiveFileLockAndPermissions(t *testing.T) {
 			_ = second.Close()
 		}
 		t.Fatalf("second open = %v", err)
+	}
+	// Windows file modes do not describe ACLs; the exclusive lock is still tested above.
+	if runtime.GOOS == "windows" {
+		return
 	}
 	for _, test := range []struct {
 		path string

@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"light-prober/internal/protocol"
@@ -299,14 +298,15 @@ func failureFor(result protocol.Result, stage string, err error) protocol.Result
 	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
 		return failed(result, stage, "timeout", "Check deadline exceeded")
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) {
+	switch socketErrorCode(err) {
+	case "refused":
 		return failed(result, stage, "refused", "Connection was refused")
-	}
-	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+	case "reset":
 		return failed(result, stage, "reset", "Connection was reset")
-	}
-	if errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
+	case "unreachable":
 		return failed(result, stage, "unreachable", "Network or host is unreachable")
+	case "timeout":
+		return failed(result, stage, "timeout", "Check deadline exceeded")
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return failed(result, stage, "closed", "Connection closed before the response completed")

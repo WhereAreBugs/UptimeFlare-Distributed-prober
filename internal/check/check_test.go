@@ -24,7 +24,8 @@ func assertFailure(t *testing.T, result protocol.Result, stage, code string) {
 	if result.Up || result.Stage != stage || result.Code != code {
 		t.Fatalf("result = %+v, want down/%s/%s", result, stage, code)
 	}
-	if result.LatencyMS <= 0 || result.Time == 0 {
+	// Windows clock resolution can produce a real zero-duration config rejection.
+	if result.LatencyMS < 0 || result.Time == 0 {
 		t.Fatalf("missing timing: %+v", result)
 	}
 }

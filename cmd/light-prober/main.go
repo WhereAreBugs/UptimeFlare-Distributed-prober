@@ -18,13 +18,9 @@ import (
 var version = "dev"
 
 func run() error {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return err
-	}
 	opts := agent.Options{}
 	flag.StringVar(&opts.Server, "server", os.Getenv("LIGHT_PROBER_SERVER"), "UptimeFlare base URL (or LIGHT_PROBER_SERVER)")
-	flag.StringVar(&opts.DataDir, "data-dir", filepath.Join(base, "light-prober"), "persistent local data directory")
+	flag.StringVar(&opts.DataDir, "data-dir", "", "persistent local data directory (default: user config directory/light-prober)")
 	flag.DurationVar(&opts.Interval, "interval", time.Minute, "check interval; overlapping rounds are skipped")
 	flag.DurationVar(&opts.FlushInterval, "flush-interval", 5*time.Minute, "batch upload interval")
 	flag.DurationVar(&opts.ConfigInterval, "config-interval", 5*time.Minute, "configuration refresh interval")
@@ -39,6 +35,11 @@ func run() error {
 	if *printVersion {
 		fmt.Println(version)
 		return nil
+	}
+	var err error
+	opts.DataDir, err = resolveDataDirectory(opts.DataDir)
+	if err != nil {
+		return err
 	}
 	if *maxMiB < 1 || *maxMiB > 1024*1024 {
 		return fmt.Errorf("max-queue-mib must be 1..1048576")
@@ -65,6 +66,18 @@ func run() error {
 	log.Info("probe started", "version", version, "interval", opts.Interval, "flush_interval", opts.FlushInterval, "concurrency", opts.Concurrency, "telemetry", *otelEnabled)
 	return a.Run(ctx)
 }
+
+func resolveDataDirectory(configured string) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "light-prober"), nil
+}
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("probe stopped", "error", err)
