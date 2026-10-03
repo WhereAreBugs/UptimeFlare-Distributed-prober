@@ -1,0 +1,387 @@
+// Package agent coordinates bounded checking, config refresh, and durable uploads.
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"light-prober/internal/check"
+	"light-prober/internal/client"
+	"light-prober/internal/protocol"
+	"light-prober/internal/spool"
+	"light-prober/internal/telemetry"
+)
+
+type Options struct {
+	Server, Token, DataDir                  string
+	Interval, FlushInterval, ConfigInterval time.Duration
+	Concurrency                             int
+	MaxQueueBytes                           int64
+	Compress, AllowInsecure                 bool
+}
+
+type Agent struct {
+	opts     Options
+	client   *client.Client
+	queue    *spool.Queue
+	checker  *check.Checker
+	metrics  telemetry.Recorder
+	log      *slog.Logger
+	mu       sync.RWMutex
+	config   protocol.Config
+	identity string
+}
+
+type cache struct {
+	Server string          `json:"server"`
+	Config protocol.Config `json:"config"`
+}
+
+type fatalError struct{ error }
+
+func New(opts Options, metrics telemetry.Recorder, log *slog.Logger) (*Agent, error) {
+	if opts.Interval < time.Second || opts.FlushInterval < time.Second || opts.ConfigInterval < time.Second || opts.Concurrency < 1 || opts.Concurrency > 32 || opts.MaxQueueBytes < 1<<20 {
+		return nil, errors.New("intervals must be >=1s, concurrency 1..32, queue >=1 MiB")
+	}
+	c, err := client.New(opts.Server, opts.Token, opts.Compress, opts.AllowInsecure)
+	if err != nil {
+		return nil, err
+	}
+	q, err := spool.Open(filepath.Join(opts.DataDir, "queue.db"), opts.MaxQueueBytes)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	a := &Agent{opts: opts, client: c, queue: q, checker: check.New(), metrics: metrics, log: log}
+	if err = a.load(); err != nil {
+		a.Close()
+		return nil, err
+	}
+	a.metrics.Identity(a.identity)
+	a.observeQueue()
+	return a, nil
+}
+
+func (a *Agent) Close() { a.client.Close(); a.checker.Close(); _ = a.queue.Close() }
+
+func (a *Agent) load() error {
+	file, err := os.Open(filepath.Join(a.opts.DataDir, "config.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		n, _, e := a.queue.Stats()
+		if e != nil {
+			return e
+		}
+		if n > 0 {
+			return errors.New("queue exists without identity cache; restore config.json before reuse")
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > 1<<20 {
+		return errors.New("oversized config cache")
+	}
+	var value cache
+	if json.Unmarshal(data, &value) != nil || client.ValidateConfig(value.Config) != nil {
+		return errors.New("invalid config cache; preserve queue.db and restore configuration")
+	}
+	if value.Server != strings.TrimRight(a.opts.Server, "/") {
+		return errors.New("data directory belongs to another receiver; select a new --data-dir")
+	}
+	a.config = value.Config
+	a.identity = value.Config.ProbeID
+	return nil
+}
+
+func (a *Agent) save(cfg protocol.Config) error {
+	data, err := json.Marshal(cache{Server: strings.TrimRight(a.opts.Server, "/"), Config: cfg})
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(a.opts.DataDir, ".config-*")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if err = file.Chmod(0600); err != nil {
+		file.Close()
+		return err
+	}
+	if _, err = file.Write(data); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Rename(name, filepath.Join(a.opts.DataDir, "config.json")); err != nil {
+		return err
+	}
+	return syncConfigDirectory(a.opts.DataDir)
+}
+
+func (a *Agent) refresh(ctx context.Context) error {
+	cfg, err := a.client.Config(ctx)
+	if err != nil {
+		a.metrics.ConfigFailure(ctx)
+		var httpErr *client.HTTPError
+		if errors.As(err, &httpErr) && (httpErr.Status == 401 || httpErr.Status == 403) {
+			a.mu.Lock()
+			a.config.Monitors = nil
+			a.mu.Unlock()
+		}
+		return err
+	}
+	if a.identity != "" && cfg.ProbeID != a.identity {
+		return fatalError{errors.New("probe identity changed; select a new data directory to preserve the original queue")}
+	}
+	if err = a.save(cfg); err != nil {
+		return fatalError{fmt.Errorf("persist config: %w", err)}
+	}
+	a.mu.Lock()
+	a.config = cfg
+	a.identity = cfg.ProbeID
+	a.mu.Unlock()
+	a.metrics.Identity(cfg.ProbeID)
+	return nil
+}
+
+func (a *Agent) observeQueue() {
+	n, b, err := a.queue.Stats()
+	if err == nil {
+		a.metrics.Queue(n, b)
+	}
+}
+
+func (a *Agent) round(ctx context.Context) error {
+	a.mu.RLock()
+	monitors := a.config.Monitors
+	a.mu.RUnlock()
+	if len(monitors) == 0 {
+		return nil
+	}
+	workers := min(a.opts.Concurrency, len(monitors))
+	// A round has a stable timestamp even when monitors wait for a worker slot.
+	// The persistent cursor also prevents identity reuse across fast restarts or
+	// backward clock jumps. Wait for real wall time; never fabricate future samples.
+	lastTime, err := a.queue.LastTime()
+	if err != nil {
+		return fmt.Errorf("read persisted sample time: %w", err)
+	}
+	var roundTime int64
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		now := time.Now()
+		roundTime = now.Unix()
+		if roundTime > lastTime {
+			break
+		}
+		// Recheck at least once a second so clock corrections are noticed promptly.
+		delay := time.Second
+		if roundTime == lastTime {
+			delay -= time.Duration(now.Nanosecond())
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	jobs := make(chan protocol.Monitor)
+	errCh := make(chan error, 1)
+	checkCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for monitor := range jobs {
+				if checkCtx.Err() != nil {
+					return
+				}
+				result := a.checker.Check(checkCtx, monitor)
+				result.Time = roundTime
+				if checkCtx.Err() != nil {
+					return
+				}
+				if err := a.queue.Append(result); err != nil {
+					select {
+					case errCh <- fmt.Errorf("cannot persist result; checking stopped: %w", err):
+					default:
+					}
+					cancel()
+					return
+				}
+				a.metrics.Check(ctx, result)
+			}
+		}()
+	}
+send:
+	for _, m := range monitors {
+		select {
+		case jobs <- m:
+		case <-checkCtx.Done():
+			break send
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	a.observeQueue()
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
+}
+
+// flush bounds each recovery pass to ten batches so a large backlog yields between passes.
+func (a *Agent) flush(ctx context.Context) (bool, error) {
+	for i := 0; i < 10; i++ {
+		entries, err := a.queue.Peek(protocol.MaxBatchResults)
+		if err != nil {
+			return false, err
+		}
+		if len(entries) == 0 {
+			return false, nil
+		}
+		results := make([]protocol.Result, len(entries))
+		for i, e := range entries {
+			results[i] = e.Result
+		}
+		start := time.Now()
+		wire, err := a.client.Upload(ctx, results)
+		a.metrics.Upload(ctx, time.Since(start), wire, err == nil)
+		if err != nil {
+			return true, err
+		}
+		if err = a.queue.Ack(entries); err != nil {
+			return true, fmt.Errorf("persist acknowledgement: %w", err)
+		}
+		a.observeQueue()
+	}
+	n, _, err := a.queue.Stats()
+	return n > 0, err
+}
+
+func (a *Agent) uploadLoop(ctx context.Context) {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	backoff := 15 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			more, err := a.flush(ctx)
+			next := a.opts.FlushInterval
+			if err != nil && ctx.Err() == nil {
+				a.log.Warn("batch upload failed; queue retained", "error", err)
+				next = backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))
+				backoff = min(backoff*2, 5*time.Minute)
+				var httpErr *client.HTTPError
+				if errors.As(err, &httpErr) && httpErr.RetryAfter > next {
+					next = httpErr.RetryAfter
+				}
+			} else {
+				backoff = 15 * time.Second
+				if more {
+					next = time.Second
+				}
+			}
+			timer.Reset(next)
+		}
+	}
+}
+
+func (a *Agent) Run(ctx context.Context) error {
+	if err := a.refresh(ctx); err != nil {
+		var fatal fatalError
+		if errors.As(err, &fatal) {
+			return err
+		}
+		a.log.Warn("configuration unavailable; using cached monitors if present", "error", err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	var bg sync.WaitGroup
+	fatalCh := make(chan error, 1)
+	bg.Add(2)
+	go func() { defer bg.Done(); a.uploadLoop(runCtx) }()
+	go func() {
+		defer bg.Done()
+		ticker := time.NewTicker(a.opts.ConfigInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				if err := a.refresh(runCtx); err != nil && runCtx.Err() == nil {
+					var fatal fatalError
+					if errors.As(err, &fatal) {
+						fatalCh <- err
+						cancel()
+						return
+					}
+					a.log.Warn("configuration refresh failed", "error", err)
+				}
+			}
+		}
+	}()
+	defer func() {
+		cancel()
+		bg.Wait()
+		shutdown, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_, _ = a.flush(shutdown)
+	}()
+	for {
+		start := time.Now()
+		if err := a.round(runCtx); err != nil {
+			return err
+		}
+		// Skip missed rounds instead of consuming a buffered tick and running catch-up checks.
+		delay := a.opts.Interval - time.Since(start)
+		if delay <= 0 {
+			delay = a.opts.Interval
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case err := <-fatalCh:
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
+}
