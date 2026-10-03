@@ -1,0 +1,10 @@
+UptimeFlare/
+bin/
+data/
+*.db
+*.db.lock
+*.test
+coverage.out
+.env
+.DS_Store
+.wrangler/
