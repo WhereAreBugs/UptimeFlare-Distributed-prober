@@ -110,7 +110,18 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/su
         plainBytes += decoded.length
       }
       const response = await mf.dispatchFetch(`https://receiver.test${req.url}`, { method: req.method, headers: req.headers, ...(body.length && { body }) })
-      const content = Buffer.from(await response.arrayBuffer())
+      let content = Buffer.from(await response.arrayBuffer())
+      // This crash/replay test accelerates only the legacy fallback cadence.
+      // Validate the real receiver defaults before emulating an older cached config;
+      // remote interval scheduling is covered separately by scheduler tests.
+      if (req.url === '/api/probes/config' && response.status === 200) {
+        const config = JSON.parse(content)
+        for (const monitor of config.monitors) {
+          assert.equal(monitor.intervalSeconds, 300)
+          delete monitor.intervalSeconds
+        }
+        content = Buffer.from(JSON.stringify(config))
+      }
       if (batch && response.status !== 200) ingestErrors.push({ status: response.status, body: content.toString() })
       if (batch && response.status === 200) {
         const keys = batch.results.map(result => sampleKey(id, result))
@@ -122,7 +133,9 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/su
           res.writeHead(503); res.end('committed ACK intentionally lost'); return
         }
       }
-      res.writeHead(response.status, Object.fromEntries(response.headers))
+      const headers = Object.fromEntries(response.headers)
+      delete headers['content-length']
+      res.writeHead(response.status, headers)
       res.end(content)
     } catch (error) { res.writeHead(500); res.end(error.message) }
   })
@@ -180,6 +193,7 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/su
   const report = {
     passed: true, durationSeconds: Number(((Date.now() - started) / 1000).toFixed(2)),
     realGoBinary: binary, localMiniflareD1: true, independentProbes: 2,
+    receiverDefaultIntervalVerified: true, acceleratedLegacyFallbackCadence: true,
     offlineCrashQueueResults: crashQueue.count, cachedRestartQueueResults: recoveredQueue.count,
     persistedSamples: storedKeys.size, lostAckReplayDeduplicated: true,
     recoveredQueuesEmpty: true, aggregateHttpStatus: summaries.http.status, aggregateTcpStatus: summaries.tcp.status,

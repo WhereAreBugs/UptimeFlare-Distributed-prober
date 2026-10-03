@@ -338,6 +338,76 @@ func TestFailedAppendDoesNotAdvanceLastTime(t *testing.T) {
 	}
 }
 
+func TestIndependentMonitorCursorsSurviveAckAndRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "results.db")
+	q, err := Open(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := fixture()
+	first.MonitorID = "fast"
+	second := fixture()
+	second.MonitorID, second.Time = "slow", first.Time+100
+	for _, result := range []protocol.Result{first, second} {
+		if err := q.Append(result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if last, err := q.LastTimeFor("fast"); err != nil || last != first.Time {
+		t.Fatalf("fast cursor=%d/%v", last, err)
+	}
+	if last, err := q.LastTimeFor("brand-new"); err != nil || last != 0 {
+		t.Fatalf("new target coupled to global cursor=%d/%v", last, err)
+	}
+	entries, _ := q.Peek(2)
+	if err := q.Ack(entries); err != nil {
+		t.Fatal(err)
+	}
+	_ = q.Close()
+	q, err = Open(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	for id, expected := range map[string]int64{"fast": first.Time, "slow": second.Time} {
+		if last, err := q.LastTimeFor(id); err != nil || last != expected {
+			t.Fatalf("reopened %s cursor=%d/%v", id, last, err)
+		}
+	}
+}
+
+func TestMonitorCursorMigrationKeepsOldGlobalFloor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "results.db")
+	q, err := Open(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Append(fixture()); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := q.Peek(1)
+	if err := q.Ack(entries); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.DeleteBucket(monitorTimesKey); err != nil {
+			return err
+		}
+		return tx.Bucket(metaKey).Delete(monitorFloorKey)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = q.Close()
+	q, err = Open(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	if last, err := q.LastTimeFor("previously-acknowledged"); err != nil || last != fixture().Time {
+		t.Fatalf("migration lost acknowledged timestamp=%d/%v", last, err)
+	}
+}
+
 func TestConcurrentAppendsPersistAllResults(t *testing.T) {
 	q, err := Open(filepath.Join(t.TempDir(), "results.db"), 1<<20)
 	if err != nil {

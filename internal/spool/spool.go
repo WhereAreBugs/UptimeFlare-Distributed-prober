@@ -28,17 +28,19 @@ const (
 var checksumTable = crc32.MakeTable(crc32.Castagnoli)
 
 var (
-	ErrFull     = errors.New("persistent queue is full")
-	ErrTooLarge = errors.New("result exceeds persistent queue entry limit")
-	ErrCorrupt  = errors.New("persistent queue is corrupt")
-	ErrMismatch = errors.New("acknowledged result does not match queued result")
-	ErrLocked   = errors.New("persistent queue is already open by another process")
-	ErrClosed   = errors.New("persistent queue is closed")
-	resultsKey  = []byte("results-v1")
-	metaKey     = []byte("meta-v1")
-	countKey    = []byte("count")
-	bytesKey    = []byte("bytes")
-	lastTimeKey = []byte("last-time")
+	ErrFull         = errors.New("persistent queue is full")
+	ErrTooLarge     = errors.New("result exceeds persistent queue entry limit")
+	ErrCorrupt      = errors.New("persistent queue is corrupt")
+	ErrMismatch     = errors.New("acknowledged result does not match queued result")
+	ErrLocked       = errors.New("persistent queue is already open by another process")
+	ErrClosed       = errors.New("persistent queue is closed")
+	resultsKey      = []byte("results-v1")
+	metaKey         = []byte("meta-v1")
+	countKey        = []byte("count")
+	bytesKey        = []byte("bytes")
+	lastTimeKey     = []byte("last-time")
+	monitorTimesKey = []byte("monitor-times-v1")
+	monitorFloorKey = []byte("monitor-time-floor")
 )
 
 type Entry struct {
@@ -79,7 +81,12 @@ func Open(path string, maxBytes int64) (*Queue, error) {
 	}
 	q := &Queue{db: db, maxBytes: maxBytes}
 	if err = os.Chmod(path, 0600); err == nil {
-		err = db.Update(initialize)
+		err = db.Update(func(tx *bolt.Tx) error {
+			if err := initialize(tx); err != nil {
+				return err
+			}
+			return initializeMonitorTimes(tx)
+		})
 	}
 	if err == nil {
 		err = db.View(verify)
@@ -89,6 +96,35 @@ func Open(path string, maxBytes int64) (*Queue, error) {
 		return nil, err
 	}
 	return q, nil
+}
+
+func initializeMonitorTimes(tx *bolt.Tx) error {
+	if tx.Bucket(monitorTimesKey) != nil {
+		return nil
+	}
+	times, err := tx.CreateBucket(monitorTimesKey)
+	if err != nil {
+		return err
+	}
+	lastTime, err := readLastTime(tx)
+	if err != nil {
+		return err
+	}
+	if err := tx.Bucket(metaKey).Put(monitorFloorKey, encode(uint64(lastTime))); err != nil {
+		return err
+	}
+	return tx.Bucket(resultsKey).ForEach(func(_, value []byte) error {
+		result, err := decodeResult(value)
+		if err != nil {
+			return err
+		}
+		key := monitorTimeKey(result.MonitorID)
+		previous := times.Get(key)
+		if previous == nil || result.Time > int64(binary.BigEndian.Uint64(previous)) {
+			return times.Put(key, encode(uint64(max(int64(0), result.Time))))
+		}
+		return nil
+	})
 }
 
 func initialize(tx *bolt.Tx) error {
@@ -147,6 +183,10 @@ func verify(tx *bolt.Tx) error {
 			return err
 		}
 		maxTime = max(maxTime, result.Time)
+		monitorTime, err := readMonitorTime(tx, result.MonitorID)
+		if err != nil || monitorTime < result.Time {
+			return ErrCorrupt
+		}
 		count++
 		payloadBytes += uint64(len(value) - recordHeader)
 		return nil
@@ -160,6 +200,21 @@ func verify(tx *bolt.Tx) error {
 	lastTime, err := readLastTime(tx)
 	if err != nil || lastTime < maxTime {
 		return ErrCorrupt
+	}
+	if tx.Bucket(monitorTimesKey) == nil {
+		return ErrCorrupt
+	}
+	floor := tx.Bucket(metaKey).Get(monitorFloorKey)
+	if len(floor) != 8 || binary.BigEndian.Uint64(floor) > uint64(lastTime) {
+		return ErrCorrupt
+	}
+	if err := tx.Bucket(monitorTimesKey).ForEach(func(key, value []byte) error {
+		if len(key) == 0 || key[0] != 1 || len(value) != 8 || binary.BigEndian.Uint64(value) > uint64(lastTime) {
+			return ErrCorrupt
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	last, _ := entries.Cursor().Last()
 	if last != nil && entries.Sequence() < binary.BigEndian.Uint64(last) {
@@ -198,6 +253,15 @@ func (q *Queue) Append(result protocol.Result) error {
 		}
 		if result.Time > lastTime {
 			if err := tx.Bucket(metaKey).Put(lastTimeKey, encode(uint64(result.Time))); err != nil {
+				return err
+			}
+		}
+		monitorTime, err := readMonitorTime(tx, result.MonitorID)
+		if err != nil {
+			return err
+		}
+		if result.Time > monitorTime || tx.Bucket(monitorTimesKey).Get(monitorTimeKey(result.MonitorID)) == nil {
+			if err := tx.Bucket(monitorTimesKey).Put(monitorTimeKey(result.MonitorID), encode(uint64(max(int64(0), result.Time)))); err != nil {
 				return err
 			}
 		}
@@ -294,6 +358,37 @@ func (q *Queue) LastTime() (lastTime int64, err error) {
 		return err
 	})
 	return
+}
+
+// LastTimeFor keeps independent target clocks while preserving identity across
+// restarts and configuration removal/re-addition. Unknown targets conservatively
+// use the migration-time cursor for an older acknowledged, empty queue.
+func (q *Queue) LastTimeFor(monitorID string) (lastTime int64, err error) {
+	err = q.view(func(tx *bolt.Tx) error {
+		lastTime, err = readMonitorTime(tx, monitorID)
+		return err
+	})
+	return
+}
+
+func monitorTimeKey(id string) []byte {
+	// A prefix also represents the empty ID without violating bbolt's key limit.
+	return append([]byte{1}, id...)
+}
+
+func readMonitorTime(tx *bolt.Tx, monitorID string) (int64, error) {
+	times := tx.Bucket(monitorTimesKey)
+	if times == nil {
+		return 0, ErrCorrupt
+	}
+	value := times.Get(monitorTimeKey(monitorID))
+	if value == nil {
+		value = tx.Bucket(metaKey).Get(monitorFloorKey)
+	}
+	if len(value) != 8 || binary.BigEndian.Uint64(value) > math.MaxInt64 {
+		return 0, ErrCorrupt
+	}
+	return int64(binary.BigEndian.Uint64(value)), nil
 }
 
 func (q *Queue) Close() error {

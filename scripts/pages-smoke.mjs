@@ -60,19 +60,23 @@ try {
   const cookie = login.headers.get('Set-Cookie').split(';')[0]
   await check('/api/admin/config', { headers: { Cookie: cookie } }, 200, value => {
     assert(value.probes.some(probe => probe.id === 'cloudflare'))
+    assert(!('probeStaleAfterSeconds' in value))
   })
   const config = {
-    revision: 0, probes: [{ id: 'p1' }, { id: 'cloudflare' }], probeStaleAfterSeconds: 900,
+    revision: 0, probes: [{ id: 'p1' }, { id: 'cloudflare' }],
     notificationTemplates: [{ id: 'smoke-hook', name: 'Smoke webhook', type: 'webhook', webhook: { url: 'https://private-notification.example/secret', payloadType: 'json', headers: { Authorization: 'private-notification-secret' }, payload: { text: '$MSG' } } }],
     monitors: [{ id: 'smoke', name: 'Smoke target', method: 'GET', target: 'https://private-smoke.example', probes: ['p1', 'cloudflare'], headers: { Authorization: 'private-target-secret' }, notificationTemplateId: 'smoke-hook' }],
   }
   await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(config) }, 200, value => {
     assert.equal(value.notificationTemplates[0].webhook.headers.Authorization, 'private-notification-secret')
     assert.equal(value.monitors[0].notificationTemplateId, 'smoke-hook')
+    assert(!('probeStaleAfterSeconds' in value))
   })
   await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(config) }, 409)
   await check('/api/probes/config', { headers: { Authorization: `Bearer ${token}` } }, 200, value => {
     assert.equal(value.monitors[0].target, 'https://private-smoke.example')
+    assert.equal(value.monitors[0].intervalSeconds, 300)
+    assert.equal(value.monitors[0].timeout, 5000)
     assert(!JSON.stringify(value).includes('private-notification'))
     assert(!JSON.stringify(value).includes('notificationTemplateId'))
   })
@@ -89,6 +93,17 @@ try {
     assert.equal(value.monitors[0].id, 'smoke')
     assert.notEqual(value.monitors[1].id, 'smoke')
     assert.notEqual(value.notificationTemplates[0].id, value.notificationTemplates[1].id)
+  })
+  let changed
+  await check('/api/admin/config', { headers: { Cookie: cookie } }, 200, value => { changed = value })
+  changed.monitors[0].intervalSeconds = 60
+  changed.monitors[0].timeout = 7000
+  await check('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: 'https://pages.test', Cookie: cookie }, body: JSON.stringify(changed) }, 200)
+  await check('/api/probes/config', { headers: { Authorization: `Bearer ${token}` } }, 200, value => {
+    assert.equal(value.monitors[0].intervalSeconds, 60)
+    assert.equal(value.monitors[0].timeout, 7000)
+    assert.equal(value.monitors[1].intervalSeconds, 300)
+    assert.equal(value.monitors[1].timeout, 5000)
   })
   const persisted = await db.prepare('SELECT COUNT(*) n FROM probe_samples').first()
   assert.equal(persisted.n, 0)

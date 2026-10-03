@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	defaultTimeout = 10 * time.Second
+	defaultTimeout = protocol.DefaultTimeoutMS * time.Millisecond
 	maxKeywordBody = 1 << 20
 	maxKeywordSize = 4096
 	maxDrainBody   = 32 << 10
@@ -39,8 +39,10 @@ type Checker struct {
 func New() *Checker {
 	dialer := &net.Dialer{KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
-		Proxy:                  http.ProxyFromEnvironment,
-		DialContext:            dialer.DialContext,
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return boundedHTTPDial(dialer.DialContext, ctx, network, address)
+		},
 		ForceAttemptHTTP2:      true,
 		MaxIdleConns:           32,
 		MaxIdleConnsPerHost:    2,
@@ -110,6 +112,9 @@ func (c *Checker) Check(parent context.Context, monitor protocol.Monitor) (resul
 		}
 	}
 	state := &traceState{stage: "tcp"}
+	// http.Transport detaches dialing from request cancellation to populate its
+	// reusable pool. A probe must bound even those background dial attempts.
+	req = req.WithContext(context.WithValue(req.Context(), checkContextKey{}, ctx))
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), state.trace()))
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -147,6 +152,27 @@ func (c *Checker) Check(parent context.Context, monitor protocol.Monitor) (resul
 	}
 	result.Up = true
 	return result
+}
+
+type checkContextKey struct{}
+
+func boundedHTTPDial(dial func(context.Context, string, string) (net.Conn, error), ctx context.Context, network, address string) (net.Conn, error) {
+	if original, ok := ctx.Value(checkContextKey{}).(context.Context); ok {
+		if err := original.Err(); err != nil {
+			return nil, err
+		}
+		deadline, hasDeadline := original.Deadline()
+		var cancel context.CancelFunc
+		if hasDeadline {
+			ctx, cancel = context.WithDeadline(ctx, deadline)
+		} else {
+			ctx, cancel = context.WithCancel(ctx)
+		}
+		stop := context.AfterFunc(original, cancel)
+		defer stop()
+		defer cancel()
+	}
+	return dial(ctx, network, address)
 }
 
 var scanBuffers = sync.Pool{New: func() any { return make([]byte, 32<<10) }}

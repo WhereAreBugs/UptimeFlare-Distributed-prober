@@ -57,6 +57,37 @@ func TestTCPChecksAndFailureClassification(t *testing.T) {
 	}
 }
 
+func TestCheckTimeoutDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		timeout int
+		want    time.Duration
+	}{
+		{"default", 0, 5 * time.Second},
+		{"configured", 7500, 7500 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			checker := New()
+			defer checker.Close()
+			var deadline time.Time
+			checker.dial = func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var ok bool
+				deadline, ok = ctx.Deadline()
+				if !ok {
+					t.Error("check context has no deadline")
+				}
+				return nil, context.Canceled
+			}
+			start := time.Now()
+			checker.Check(context.Background(), protocol.Monitor{Method: "TCP_PING", Target: "127.0.0.1:80", Timeout: test.timeout})
+			elapsed := deadline.Sub(start)
+			if elapsed < test.want || elapsed > test.want+250*time.Millisecond {
+				t.Fatalf("deadline=%s after start, want %s", elapsed, test.want)
+			}
+		})
+	}
+}
+
 func TestHTTPStatusKeywordsAndMethods(t *testing.T) {
 	var sawPost bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -244,6 +275,36 @@ func TestStreamingKeywordsAcrossChunksAndRepeatedPrefix(t *testing.T) {
 		if err != nil || exhausted || wanted != test.wanted || blocked != test.blocked {
 			t.Fatalf("scan = %v/%v/%v/%v", wanted, blocked, exhausted, err)
 		}
+	}
+}
+
+func TestDetachedHTTPDialRetainsProbeDeadlineAndCancellation(t *testing.T) {
+	original, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	detached := context.WithoutCancel(context.WithValue(original, checkContextKey{}, original))
+	started, finished := make(chan struct{}), make(chan error, 1)
+	go func() {
+		_, err := boundedHTTPDial(func(ctx context.Context, _, _ string) (net.Conn, error) {
+			deadline, ok := ctx.Deadline()
+			expected, _ := original.Deadline()
+			if !ok || !deadline.Equal(expected) {
+				t.Errorf("HTTP background dial lost original deadline: %v, %v", deadline, ok)
+			}
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}, detached, "tcp", "unused")
+		finished <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("dial cancellation = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled probe left a background dial running")
 	}
 }
 

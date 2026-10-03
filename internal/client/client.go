@@ -114,6 +114,9 @@ func ValidateConfig(cfg protocol.Config) error {
 		if m.ID == "" || len(m.ID) > 128 || seen[m.ID] || len(m.Target) > 4096 || m.Target == "" || m.Timeout < 0 || m.Timeout > 120000 || len(m.Body) > 65536 || len(m.Headers) > 64 || len(m.ResponseKeyword) > 4096 || len(m.ResponseForbiddenKeyword) > 4096 {
 			return errors.New("invalid monitor configuration")
 		}
+		if m.IntervalSeconds != 0 && (m.IntervalSeconds < protocol.MinIntervalSeconds || m.IntervalSeconds > protocol.MaxIntervalSeconds) {
+			return errors.New("monitor intervalSeconds must be zero or 60..86400")
+		}
 		seen[m.ID] = true
 	}
 	return nil

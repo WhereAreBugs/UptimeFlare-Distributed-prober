@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -105,5 +106,56 @@ func TestConfigAndResponseLimits(t *testing.T) {
 	}
 	if err := ValidateConfig(protocol.Config{Version: 1, ProbeID: "p", Monitors: []protocol.Monitor{{ID: "a", Target: "x"}, {ID: "a", Target: "y"}}}); err == nil {
 		t.Fatal("duplicate monitor accepted")
+	}
+}
+
+func TestValidateConfigInterval(t *testing.T) {
+	for _, interval := range []int{-86400, -1, 1, 59, 86401} {
+		t.Run("invalid_"+strconv.Itoa(interval), func(t *testing.T) {
+			cfg := protocol.Config{Version: protocol.Version, ProbeID: "p", Monitors: []protocol.Monitor{{ID: "web", Target: "https://example.com", IntervalSeconds: interval}}}
+			if err := ValidateConfig(cfg); err == nil {
+				t.Fatal("invalid monitor interval accepted")
+			}
+		})
+	}
+	for _, interval := range []int{0, 60, 300, 86400} {
+		t.Run("valid_"+strconv.Itoa(interval), func(t *testing.T) {
+			cfg := protocol.Config{Version: protocol.Version, ProbeID: "p", Monitors: []protocol.Monitor{{ID: "web", Target: "https://example.com", IntervalSeconds: interval}}}
+			if err := ValidateConfig(cfg); err != nil {
+				t.Fatalf("valid monitor interval rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestConfigIntervalWireCompatibility(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		json     string
+		interval int
+	}{
+		{"omitted", `{"id":"web","target":"https://example.com"}`, 0},
+		{"configured", `{"id":"web","target":"https://example.com","intervalSeconds":60}`, 60},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var monitor protocol.Monitor
+			if err := json.Unmarshal([]byte(test.json), &monitor); err != nil {
+				t.Fatal(err)
+			}
+			if monitor.IntervalSeconds != test.interval {
+				t.Fatalf("intervalSeconds=%d, want %d", monitor.IntervalSeconds, test.interval)
+			}
+			cfg := protocol.Config{Version: protocol.Version, ProbeID: "p", Monitors: []protocol.Monitor{monitor}}
+			if err := ValidateConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(monitor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), `"intervalSeconds"`) != (test.interval != 0) {
+				t.Fatalf("unexpected intervalSeconds encoding: %s", data)
+			}
+		})
 	}
 }

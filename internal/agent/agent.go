@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -31,15 +32,19 @@ type Options struct {
 }
 
 type Agent struct {
-	opts     Options
-	client   *client.Client
-	queue    *spool.Queue
-	checker  *check.Checker
-	metrics  telemetry.Recorder
-	log      *slog.Logger
-	mu       sync.RWMutex
-	config   protocol.Config
-	identity string
+	opts          Options
+	client        *client.Client
+	queue         *spool.Queue
+	checker       *check.Checker
+	metrics       telemetry.Recorder
+	log           *slog.Logger
+	mu            sync.RWMutex
+	config        protocol.Config
+	identity      string
+	configChanged chan struct{}
+	uploadChanged chan struct{}
+	resultReady   chan struct{}
+	firstResult   sync.Once
 }
 
 type cache struct {
@@ -62,7 +67,8 @@ func New(opts Options, metrics telemetry.Recorder, log *slog.Logger) (*Agent, er
 		c.Close()
 		return nil, err
 	}
-	a := &Agent{opts: opts, client: c, queue: q, checker: check.New(), metrics: metrics, log: log}
+	a := &Agent{opts: opts, client: c, queue: q, checker: check.New(), metrics: metrics, log: log,
+		configChanged: make(chan struct{}, 1), uploadChanged: make(chan struct{}, 1), resultReady: make(chan struct{}, 1)}
 	if err = a.load(); err != nil {
 		a.Close()
 		return nil, err
@@ -149,6 +155,7 @@ func (a *Agent) refresh(ctx context.Context) error {
 			a.mu.Lock()
 			a.config.Monitors = nil
 			a.mu.Unlock()
+			a.notifyConfig()
 		}
 		return err
 	}
@@ -159,11 +166,20 @@ func (a *Agent) refresh(ctx context.Context) error {
 		return fatalError{fmt.Errorf("persist config: %w", err)}
 	}
 	a.mu.Lock()
+	changed := !reflect.DeepEqual(a.config, cfg)
 	a.config = cfg
 	a.identity = cfg.ProbeID
 	a.mu.Unlock()
 	a.metrics.Identity(cfg.ProbeID)
+	if changed {
+		a.notifyConfig()
+	}
 	return nil
+}
+
+func (a *Agent) notifyConfig() {
+	wake(a.configChanged)
+	wake(a.uploadChanged)
 }
 
 func (a *Agent) observeQueue() {
@@ -296,13 +312,40 @@ func (a *Agent) uploadLoop(ctx context.Context) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	backoff := 15 * time.Second
+	retrying := false
+	lastFlush, nextAt := time.Now(), time.Now()
+	reset := func(at time.Time) {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		nextAt = at
+		timer.Reset(max(time.Duration(0), time.Until(at)))
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-a.resultReady:
+			if !retrying {
+				reset(time.Now())
+			}
+		case <-a.uploadChanged:
+			if !retrying {
+				// A shorter target cadence must not leave results waiting behind
+				// a timer calculated from the previous, slower configuration.
+				at := lastFlush.Add(a.flushCadence())
+				if at.Before(nextAt) {
+					reset(at)
+				}
+			}
 		case <-timer.C:
 			more, err := a.flush(ctx)
-			next := a.opts.FlushInterval
+			lastFlush = time.Now()
+			next := a.flushCadence()
+			retrying = err != nil
 			if err != nil && ctx.Err() == nil {
 				a.log.Warn("batch upload failed; queue retained", "error", err)
 				next = backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))
@@ -317,9 +360,17 @@ func (a *Agent) uploadLoop(ctx context.Context) {
 					next = time.Second
 				}
 			}
-			timer.Reset(next)
+			reset(lastFlush.Add(next))
 		}
 	}
+}
+
+func (a *Agent) flushCadence() time.Duration {
+	interval := a.opts.FlushInterval
+	for _, monitor := range a.configuredMonitors() {
+		interval = min(interval, monitorInterval(monitor, a.opts.Interval))
+	}
+	return interval
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -363,25 +414,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		defer stop()
 		_, _ = a.flush(shutdown)
 	}()
-	for {
-		start := time.Now()
-		if err := a.round(runCtx); err != nil {
-			return err
-		}
-		// Skip missed rounds instead of consuming a buffered tick and running catch-up checks.
-		delay := a.opts.Interval - time.Since(start)
-		if delay <= 0 {
-			delay = a.opts.Interval
-		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil
-		case err := <-fatalCh:
-			timer.Stop()
-			return err
-		case <-timer.C:
-		}
+	if err := a.runChecks(runCtx); err != nil {
+		return err
+	}
+	select {
+	case err := <-fatalCh:
+		return err
+	default:
+		return nil
 	}
 }

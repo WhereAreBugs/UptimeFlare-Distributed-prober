@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"light-prober/internal/agent"
+	"light-prober/internal/protocol"
 	"light-prober/internal/telemetry"
 )
 
@@ -21,8 +22,8 @@ func run() error {
 	opts := agent.Options{}
 	flag.StringVar(&opts.Server, "server", os.Getenv("LIGHT_PROBER_SERVER"), "UptimeFlare base URL (or LIGHT_PROBER_SERVER)")
 	flag.StringVar(&opts.DataDir, "data-dir", "", "persistent local data directory (default: user config directory/light-prober)")
-	flag.DurationVar(&opts.Interval, "interval", time.Minute, "check interval; overlapping rounds are skipped")
-	flag.DurationVar(&opts.FlushInterval, "flush-interval", 5*time.Minute, "batch upload interval")
+	flag.DurationVar(&opts.Interval, "interval", protocol.DefaultIntervalSeconds*time.Second, "legacy fallback check interval; overridden by each remote monitor's intervalSeconds")
+	flag.DurationVar(&opts.FlushInterval, "flush-interval", 5*time.Minute, "batch upload interval (capped at the minimum monitor interval)")
 	flag.DurationVar(&opts.ConfigInterval, "config-interval", 5*time.Minute, "configuration refresh interval")
 	flag.IntVar(&opts.Concurrency, "concurrency", 4, "maximum concurrent target checks (1..32)")
 	maxMiB := flag.Int64("max-queue-mib", 256, "maximum unacknowledged payload bytes; full queue stops checks")
@@ -63,7 +64,7 @@ func run() error {
 		return err
 	}
 	defer a.Close()
-	log.Info("probe started", "version", version, "interval", opts.Interval, "flush_interval", opts.FlushInterval, "concurrency", opts.Concurrency, "telemetry", *otelEnabled)
+	log.Info("probe started", "version", version, "legacy_interval", opts.Interval, "max_flush_interval", opts.FlushInterval, "concurrency", opts.Concurrency, "telemetry", *otelEnabled)
 	return a.Run(ctx)
 }
 

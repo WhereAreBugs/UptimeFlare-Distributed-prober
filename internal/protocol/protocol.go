@@ -1,14 +1,21 @@
 // Package protocol defines the versioned contract shared with the UptimeFlare receiver.
 package protocol
 
-const Version = 1
-const MaxBatchResults = 200
+const (
+	Version                = 1
+	MaxBatchResults        = 200
+	DefaultIntervalSeconds = 300
+	MinIntervalSeconds     = 60
+	MaxIntervalSeconds     = 86400
+	DefaultTimeoutMS       = 5000
+)
 
 type Monitor struct {
 	ID                       string            `json:"id"`
 	Method                   string            `json:"method"`
 	Target                   string            `json:"target"`
-	Timeout                  int               `json:"timeout,omitempty"` // milliseconds
+	Timeout                  int               `json:"timeout,omitempty"`         // milliseconds
+	IntervalSeconds          int               `json:"intervalSeconds,omitempty"` // seconds; zero uses the legacy fallback
 	Headers                  map[string]string `json:"headers,omitempty"`
 	Body                     string            `json:"body,omitempty"`
 	ExpectedCodes            []int             `json:"expectedCodes,omitempty"`
