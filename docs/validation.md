@@ -98,3 +98,21 @@ Go race、nootel、vet 均通过；74 个 Worker 测试、18 个页面/API 测�
 2026-10-04 03:27（Asia/Singapore）直接查询生产 D1，`probe-1` 最近两个样本为 1791055618/1791055318，`probe-2` 为 1791055622/1791055322，Cloudflare 为 1791055500/1791055200，间隔均为 300 秒。原始样本、累计统计与五分钟桶的 checks/failures 一致；公开 API 三探针均 fresh/up，汇总 3/3。部署前后的保存配置哈希一致、revision 保持 3，测试目标原有显式 10000 毫秒超时保留。
 
 生产浏览器确认可选周期和超时、各探针执行目标摘要、全局离线字段移除，以及现有标签页和汇总历史保留。未保存的草稿把周期改成 60 秒并清空超时后，各探针摘要显示 60 秒/5 秒；刷新丢弃草稿并恢复原有配置，未用测试值覆盖生产配置。
+
+## 2026-10-04 上游功能补全
+
+服务端按 [31 项上游功能矩阵](https://github.com/WhereAreBugs/UptimeFlare-Distributed/blob/main/docs/features.md)补充分组、延迟折线、90 天日可用率、分页故障历史、按时区重复维护、页面设置、通知宽限与原因变化策略、地区检测代理，以及 SSL/ICMP 链路。历史删除线保留其原意：第三方渠道通过通用 Webhook 示例接入，没有重新加入专用 Telegram/Bark/SMTP SDK。Cloudflare 的证书到期检查和直接无法执行的 ICMP 使用 HTTP 检测代理；地区放置提示不承诺固定城市。
+
+最终 Worker 105 项测试、页面/API 23 项测试、类型检查、lint 与完整 next-on-pages 构建通过。实际 Pages 产物在 Miniflare/D1 中通过 32 个 HTTP 检查和 192 个断言，其中 165 个覆盖本次新增行为：分组、维护、页面公开 props、六个管理页模块、SSL/ICMP 元数据、鉴权头隔离、gzip 重放、五分钟与日历史、稳定游标分页。混合失败与缺失桶保留折线断点，日可用率只统计已接收样本。
+
+Go 的 race、nootel 和 vet 通过；SSL/ICMP 与认证检测代理有真实网络测试。标准版、nootel 与代理合计 24 个无 CGO 跨平台二进制构建通过。Windows 的编译与测试由三平台 CI 验证，原生 ICMP 实机接受测试不据此推断为已完成；FreeBSD 的 ICMP 需要代理。实际 Worker → Go 代理 → D1 联调通过本机 ICMP、可信 TLS 证书、临近到期分类与元数据保存。远程配置真实进程联调再次通过，目标 60 秒周期实测约 60.003 秒，URL/超时/重新分配无需重启生效。
+
+Node 22.23.3 Docker 镜像完成实际 HTTP/HTTPS `localhost` 验收：Pages 登录与保存、Worker/Pages 共享持久化 D1、gzip 重放去重、真实定时采集、同分钟去重、停止约 1.2 秒退出 0、重启保留历史，以及子进程退出导致容器退出 1。临时机密文件权限 0600，只装入三项运行时白名单；镜像未包含宿主机部署凭据。Terraform 1.13.4 / Cloudflare provider 5.26.0 的隔离 init、validate、fmt 通过，未执行云端 plan/apply；生产继续由既有 Actions 管理。
+
+探针提交 [`cb489d0`](https://github.com/WhereAreBugs/UptimeFlare-Distributed-prober/commit/cb489d080baaedfff944a7b597c55a906e8e5263) 的 [Linux/macOS/Windows CI](https://github.com/WhereAreBugs/UptimeFlare-Distributed-prober/actions/runs/37185669660)成功。两台 Linux 实机已原子升级到此版本，SHA256 为 `f80953d3ba4873c2c527b938f92c2ebfaae39754279bc42fc66383665c1c78f1`；旧二进制保留备份，systemd active/enabled，原有队列、环境及配置不变。配置仍为 300 秒与显式 10000 毫秒超时，机密与缓存权限保持 0600。
+
+服务端功能提交 `bc6140b` 与部署修复提交 [`7db6c3d`](https://github.com/WhereAreBugs/UptimeFlare-Distributed/commit/7db6c3d01be7247fd6cdb93e2a6f8f87e70f9aea) 的 [CI](https://github.com/WhereAreBugs/UptimeFlare-Distributed/actions/runs/37186304348)和 [Cloudflare 部署](https://github.com/WhereAreBugs/UptimeFlare-Distributed/actions/runs/37186304335)均成功，Pages production commit 与该提交一致。2026-10-04 15:40–15:43（Asia/Singapore）直接核对生产 D1：日桶与五分钟桶重算结果无差异，样本/累计/五分钟计数一致，三台最新两个样本间隔均为 300 秒。Cloudflare 在发布切换时提前执行一次，下一轮已恢复五分钟周期。保存配置 revision 仍为 3，原始配置哈希未改变。
+
+生产浏览器通过汇总延迟与 90 天可用率切换、独立探针入口、历史色块、故障阶段表格、六个管理标签页及 SSL/ICMP 类型选项验收。分组和维护表单用未保存草稿检查，刷新后恢复原配置；没有为演示写入生产目标或维护计划。公开页与管理页无 console error。真实故障历史已有 DNS、TLS、HTTP 超时样本，按实际检查展示，不用部署成功推断被监控目标持续可达。
+
+两台 Linux 实机另通过原生 ICMP/TLS 接受测试：短期验收进程用 `setpriv` 切换到生产探针完全相同的 UID/GID/附加组，并通过 `/proc` 验证所有 effective/permitted/inheritable/bounding/ambient capabilities 为零，`NoNewPrivs=1`。`127.0.0.1` 的 ICMP RTT 分别约 0.106/0.055 毫秒；`SSL_CERT https://status.catxxp123.top` 均通过系统信任链、主机名与默认 14 天阈值检查，返回到期时间和约 88.95 天剩余时间。临时代理仅监听回环，验收后停止并删除，生产探针 PID 保持不变且 active。首次直接使用 systemd 数字 DynamicUser 的方式受 NSS 身份解析限制，未执行检查；改用上述等效权限后通过，没有修改生产服务权限或配置。
