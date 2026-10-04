@@ -4,6 +4,7 @@ package protocol
 const (
 	Version                      = 1
 	MaxBatchResults              = 200
+	MaxMonitors                  = 500
 	DefaultIntervalSeconds       = 300
 	MinIntervalSeconds           = 60
 	MaxIntervalSeconds           = 86400

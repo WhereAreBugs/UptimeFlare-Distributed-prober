@@ -106,7 +106,7 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 }
 
 func ValidateConfig(cfg protocol.Config) error {
-	if cfg.Version != protocol.Version || cfg.ProbeID == "" || len(cfg.ProbeID) > 128 || len(cfg.Monitors) > 100 {
+	if cfg.Version != protocol.Version || cfg.ProbeID == "" || len(cfg.ProbeID) > 128 || len(cfg.Monitors) > protocol.MaxMonitors {
 		return errors.New("unsupported or oversized probe configuration")
 	}
 	seen := make(map[string]bool, len(cfg.Monitors))

@@ -89,7 +89,7 @@ func (s *schedule) apply(monitors []protocol.Monitor, fallback time.Duration, no
 	return nil
 }
 
-// due selects one target without allocating a ready queue. At most 100 targets
+// due selects one target without allocating a ready queue. At most 500 targets
 // are scanned, and only the fixed worker count can be dispatched concurrently.
 func (s *schedule) due(now time.Time) *scheduledMonitor {
 	var chosen *scheduledMonitor

@@ -159,3 +159,17 @@ func TestConfigIntervalWireCompatibility(t *testing.T) {
 		})
 	}
 }
+
+func TestLargeDistributedConfigurationRemainsBounded(t *testing.T) {
+	cfg := protocol.Config{Version: protocol.Version, ProbeID: "fixture"}
+	for i := 0; i < protocol.MaxMonitors; i++ {
+		cfg.Monitors = append(cfg.Monitors, protocol.Monitor{ID: strconv.Itoa(i), Target: "https://example.test", Method: "GET", IntervalSeconds: 300, Timeout: 5000})
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Monitors = append(cfg.Monitors, protocol.Monitor{ID: "excess", Target: "https://example.test"})
+	if err := ValidateConfig(cfg); err == nil {
+		t.Fatal("accepted more than the shared monitor limit")
+	}
+}
