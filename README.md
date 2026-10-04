@@ -1,6 +1,6 @@
 # UptimeFlare Distributed Prober
 
-Go 编写的跨平台在线性探针，配合改造后的 [UptimeFlare](https://github.com/lyc8503/UptimeFlare) 使用。支持 TCP、HTTP、HTTPS、连接阶段归因、断网落盘补传、gzip 批量上传和可选 OpenTelemetry 指标。
+Go 编写的跨平台在线性探针，配合改造后的 [UptimeFlare](https://github.com/lyc8503/UptimeFlare) 使用。支持 TCP、HTTP、HTTPS、TLS 证书有效期、直接或代理 ICMP、连接阶段归因、断网落盘补传、gzip 批量上传和可选 OpenTelemetry 指标。
 
 本目录是**独立的探针 Git 仓库**；本次工作区中的 `UptimeFlare/` 是另一个独立 Git 仓库，已被本仓库忽略。服务端安装说明在该仓库的 `docs/external-probes.md`。探针不依赖服务端源码即可编译和运行。
 
@@ -64,10 +64,12 @@ Linux/macOS 使用目录 0700、文件 0600，配置更新同步文件并在重�
 | --- | --- | --- |
 | `dns` | DNS 解析 | `not_found`, `timeout` |
 | `tcp` | TCP 建连 | `refused`, `reset`, `unreachable`, `timeout` |
-| `tls` | TLS 握手或证书验证 | `certificate`, `timeout` |
+| `tls` | TLS 握手、证书验证或临近过期 | `certificate`, `expiring`, `timeout` |
+| `icmp` | ICMP Echo 请求与响应 | `unreachable`, `timeout`, `canceled` |
+| `proxy` | 代理连接、鉴权、响应协议 | `refused`, `certificate`, `status`, `timeout`, `invalid_response` |
 | `http` | 请求发送、等待响应、状态码校验 | `timeout`, `status`, `closed` |
 | `body` | 响应读取与关键词校验 | `keyword`, `too_large`, `timeout` |
-| `configuration` | 目标或请求配置错误 | `target`, `method`, `header`, `keyword` |
+| `configuration` | 目标、请求配置或 ICMP 权限错误 | `target`, `method`, `header`, `keyword`, `permission`, `unsupported` |
 | `unknown` | 无法准确定位 | `unknown` |
 
 错误消息使用固定、安全的描述，不上传目标 URL、鉴权头、响应正文或原始错误中的凭据。Go `httptrace` 的回调受锁保护，避免并发拨号或重用连接后的重试误报阶段。HTTPS 使用系统信任根，验证证书；HTTP 不跟随重定向，需要显式允许 3xx 状态码或配置最终地址。
@@ -75,6 +77,39 @@ Linux/macOS 使用目录 0700、文件 0600，配置更新同步文件并在重�
 响应关键词使用流式 KMP 扫描，复用 32 KiB 缓冲区，扫描上限严格小于 1 MiB；关键词长度最多 4 KiB。未配置关键词时只限量读取正文以复用连接。请求头上限 64 KiB、连接池和并发数均有界。TCP 不需要 ICMP 权限或管理员权限。
 
 服务端把“探针未上报/数据过期”显示为 unknown，与目标不可达区分。全部预期探针可达才显示 up；全部明确失败显示 down；结果混合或部分缺失显示 degraded。每个目标连续两倍探测周期无新结果就过期。
+
+## 证书与 ICMP
+
+服务端监控配置 `method: "SSL_CERT"` 使用 `https://host[:port]` 目标，只完成 TLS 握手，不发送 HTTP 请求。系统信任链、主机名、有效期均需通过校验；`certificateExpiryDays` 为 0–365 的整数，默认 14，距离过期不超过该窗口时以 `tls/expiring` 报告失败。0 关闭提前预警，过期或无效证书仍失败。样本保留 `certificate_expires_at`（Unix 秒）和 `certificate_days_remaining`（带小数，可为负值），包括对端已提供证书的验证失败。
+
+`method: "ICMP_PING"` 的目标是主机名或裸 IP，不带 URL 或端口。主机名先解析 DNS，优先 IPv4；也支持 IPv6 地址。Linux/macOS 使用每次检查独立的免 root ICMP 数据报套接字和 16 字节随机载荷，确认来源及回包载荷，不调用外部 `ping` 程序。Windows 使用系统 IP Helper API；取消时等待当前原生调用返回，最长受剩余目标超时约束。FreeBSD 等其他平台通过代理执行 ICMP。样本的 `icmp_latency_ms` 是 Echo 往返时间，`latency_ms` 还包含解析及代理传输开销。平台接口依据 [Go ICMP 文档](https://pkg.go.dev/golang.org/x/net/icmp) 和 [Windows API](https://learn.microsoft.com/en-us/windows/win32/api/icmpapi/nf-icmpapi-icmpsendecho)。
+
+Linux 的免 root ICMP 需要运行用户至少一个组落在 `net.ipv4.ping_group_range` 范围内；内核默认 `1 0` 不允许任何组。检查服务账户与 `sysctl net.ipv4.ping_group_range`，不要仅以 root 下 `ping` 成功判断 `DynamicUser` 服务可用。需要收紧权限时，创建专用固定 GID 的组，为服务增加 `SupplementaryGroups=该组名`，把 sysctl 设置为允许该 GID 的范围并持久化，再在服务账户下验证。此实现不尝试需要 `CAP_NET_RAW` 的原始套接字；权限不足明确显示 `configuration/permission`，可改用有权限的代理。Docker 也需允许容器 GID 65532。配置语义见 [Linux 内核文档](https://docs.kernel.org/networking/ip-sysctl.html#ping-group-range)。
+
+`icmpProxyURL` 设为 HTTPS `/v1/check` 端点可委托 ICMP；`checkProxy` 对所有方法生效。代理鉴权统一使用 `checkProxyHeaders`；HTTP 目标鉴权仍放 `headers`，彼此独立。专用 `icmpProxyURL` 在没有 `checkProxyHeaders` 时兼容旧 `headers` 鉴权，ICMP 没有 HTTP 目标头，委托 JSON 会移除这些鉴权头；通用 `checkProxy` 不使用该旧字段回退。Go 支持 HTTP(S) 代理；`worker://`、`globalping://` 是服务端 Cloudflare 内置探针的执行选项。`checkProxyFallback: true` 仅在代理连接或协议失败时回退到该目标的常规检查路径；ICMP 配置了 `icmpProxyURL` 时，常规路径使用该专用代理，否则执行本机 ICMP。代理返回明确目标失败时不回退。返回的探针身份与默认名称继续取本探针出口 IP/ASN，代理执行地点由代理 URL 与其配置的 location label 标识。
+
+部署通用代理：
+
+```sh
+CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o check-proxy ./cmd/check-proxy
+export LIGHT_PROBER_CHECK_PROXY_TOKEN='replace-with-a-random-token-of-at-least-16-characters'
+./check-proxy --listen 127.0.0.1:8081 --location singapore --concurrency 4
+```
+
+使用 HTTPS 反向代理暴露 `/v1/check`，或提供 `--tls-cert`、`--tls-key` 让程序直接监听 HTTPS。私有 CA 场景可选 `--ca-file /path/to/roots.pem`，将这些根追加至系统信任根，仍执行证书与主机名验证。配置对应监控：
+
+```json
+{
+  "id": "example-icmp",
+  "method": "ICMP_PING",
+  "target": "example.com",
+  "timeout": 5000,
+  "icmpProxyURL": "https://proxy.example/v1/check",
+  "checkProxyHeaders": {"Authorization": "Bearer your-independent-proxy-token"}
+}
+```
+
+代理接受 `POST /v1/check` 原始监控 JSON，支持 HTTP、TCP、SSL_CERT、ICMP_PING；兼容 `POST /v1/ping` 的 `{"target":"host","timeout_ms":5000}`，也接受毫秒 `timeout`。回应 `{location,status:{up,ping,err,stage?,code?,...}}`，附带证书/ICMP 样本字段。`/v1/ping` 还附带旧格式的平面 `up`、`latency_ms` 等字段，Go 的 `icmpProxyURL` 也兼容已有平面响应代理。Bearer 鉴权为必需，默认并发 4、上限 32，请求体最多 1 MiB、响应头受限、目标超时最长 120 秒；满负载返回 503 与 `Retry-After: 1`。代理清除收到的所有委托字段再执行检查，避免递归请求；不落盘或启动遥测后台。systemd 示例为 `deploy/check-proxy.service` 与 `deploy/check-proxy.env.example`。
 
 ## 可选遥测
 
@@ -89,7 +124,8 @@ export OTEL_EXPORTER_OTLP_HEADERS='Authorization=Bearer your-telemetry-token'
 
 | 指标 | 用途 |
 | --- | --- |
-| `probe.checks`, `probe.check.duration` | 探测数、延迟，按 up 与 stage 区分 |
+| `probe.checks`, `probe.check.duration` | 探测数、延迟，按 method、up 与 stage 区分 |
+| `probe.icmp.duration`, `probe.certificate.remaining` | ICMP RTT（ms）与证书剩余有效期（天），仅有对应样本时记录 |
 | `probe.uploads`, `probe.upload.duration`, `probe.upload.bytes` | 推送成功率、耗时与实际压缩后字节数 |
 | `probe.queue.results`, `probe.queue.bytes` | 未确认积压 |
 | `probe.config.failures` | 配置获取失败 |
@@ -110,7 +146,7 @@ go vet ./cmd/... ./internal/...
 sh scripts/build.sh
 ```
 
-构建脚本输出 Linux amd64/arm64/ARMv7、macOS amd64/arm64、Windows amd64/arm64、FreeBSD amd64 两种版本。CI 在 Linux/macOS/Windows 上执行测试，生产部署另验证了两台 Linux amd64 实机；其余架构的编译成功不能代替实际目标运行验收。
+构建脚本输出 Linux amd64/arm64/ARMv7、macOS amd64/arm64、Windows amd64/arm64、FreeBSD amd64 两种探针版本及通用 check-proxy。CI 在 Linux/macOS/Windows 上执行测试，生产部署另验证了两台 Linux amd64 实机；其余架构的编译成功不能代替实际目标运行验收。
 
 Linux systemd 示例在 `deploy/light-prober.service`，通过 `DynamicUser`、`StateDirectory` 和只读系统目录运行。把二进制放到 `/usr/local/bin/light-prober`，将 `deploy/light-prober.env.example` 复制成 `/etc/light-prober.env` 并设置真实值、0600 权限，再安装并启用 service。Windows 可通过任务计划程序在专用账户下运行，macOS 可通过 launchd 保持运行；普通进程版本无需平台专用服务依赖。
 
@@ -132,6 +168,10 @@ node scripts/e2e.mjs ./UptimeFlare
 ```
 
 联调用真实 Go 进程和 Miniflare D1，覆盖断网、进程强制退出、缓存启动、丢失确认后的重传与多探针汇总。测试证据和本机性能测量见 `docs/validation.md`。
+
+`node scripts/check-proxy-worker-smoke.mjs` 使用真实 Worker Runtime 调用独立 Go 代理，检查可信 TLS、到期预警、ICMP 两种协议、代理鉴权失败与 D1 日汇总/可选样本字段；它自动创建并清理临时测试证书和进程。先编译 `bin/check-proxy-smoke` 并安装服务端 Worker 依赖。
+
+`python3 scripts/check-proxy-fixture.py --self-test` 启动真实代理二进制及 HTTP/TLS 目标，验证可信证书、过期窗口和 ICMP 协议；仅联调脚本需要 Python/OpenSSL。使用 `--state-file /tmp/check-proxy-fixture.json` 可保持 fixture 运行，端点与临时令牌只写入该 0600 文件，供 Worker 网络联调读取，退出时删除。
 
 服务端执行 `npx @cloudflare/next-on-pages` 后，可通过 `node scripts/pages-smoke.mjs ./UptimeFlare` 检查实际 Pages 构建产物的密钥绑定、鉴权、网页配置管理和 gzip 路由。资源测量脚本 `node scripts/resource-smoke.mjs` 适用于 Linux/macOS，使用本地测试目标。生产数据验收与这些本地测试分别记录在 `docs/validation.md`。
 

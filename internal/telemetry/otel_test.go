@@ -57,7 +57,11 @@ func TestOTLPExportAndDisabledPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Identity("sg")
-	r.Check(ctx, protocol.Result{MonitorID: "SECRET-MONITOR", Up: false, LatencyMS: 123, Stage: "tcp", Code: "refused", Message: "SECRET-MESSAGE"})
+	r.Check(ctx, protocol.Result{MonitorID: "SECRET-MONITOR", Up: false, LatencyMS: 123, Stage: "tcp", Code: "refused", Message: "SECRET-MESSAGE"}, "TCP_PING")
+	days, rtt := 3.0, 0.5
+	r.Check(ctx, protocol.Result{Up: false, Stage: "tls", CertificateDaysRemaining: &days}, "SSL_CERT")
+	r.Check(ctx, protocol.Result{Up: true, ICMPLatencyMS: &rtt}, "ICMP_PING")
+	r.Check(ctx, protocol.Result{Stage: "SECRET-STAGE"}, "SECRET-METHOD")
 	r.Queue(3, 300)
 	r.Upload(ctx, time.Millisecond, 100, true)
 	if err = r.(*recorder).provider.ForceFlush(ctx); err != nil {
@@ -65,7 +69,7 @@ func TestOTLPExportAndDisabledPath(t *testing.T) {
 	}
 	request := <-observed
 	text := request.String()
-	for _, name := range []string{"probe.checks", "probe.check.duration", "probe.upload.bytes", "probe.queue.results", "probe.runtime.heap", "probe.runtime.goroutines"} {
+	for _, name := range []string{"probe.checks", "probe.check.duration", "probe.icmp.duration", "probe.certificate.remaining", "SSL_CERT", "ICMP_PING", "probe.upload.bytes", "probe.queue.results", "probe.runtime.heap", "probe.runtime.goroutines"} {
 		if !strings.Contains(text, name) {
 			t.Fatalf("metric %s not exported", name)
 		}

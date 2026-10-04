@@ -188,7 +188,7 @@ func (a *Agent) perform(job checkJob) error {
 	if err := a.queue.Append(result); err != nil {
 		return fmt.Errorf("cannot persist result; checking stopped: %w", err)
 	}
-	a.metrics.Check(job.ctx, result)
+	a.metrics.Check(job.ctx, result, job.monitor.Method)
 	a.firstResult.Do(func() { wake(a.resultReady) })
 	return nil
 }

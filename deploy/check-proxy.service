@@ -1,0 +1,23 @@
+[Unit]
+Description=Light Prober authenticated check proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=/etc/check-proxy.env
+ExecStart=/usr/local/bin/check-proxy --listen 127.0.0.1:8081 --location configured --concurrency 4
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+# Linux ICMP requires this user's group to be allowed by ping_group_range.
+# Optional dedicated group: SupplementaryGroups=light-prober-ping
+# Expose this loopback HTTP endpoint through an authenticated HTTPS reverse proxy.
+
+[Install]
+WantedBy=multi-user.target

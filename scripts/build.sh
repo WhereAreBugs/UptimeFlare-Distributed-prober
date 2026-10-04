@@ -8,6 +8,8 @@ for target in linux/amd64 linux/arm64 linux/arm darwin/amd64 darwin/arm64 window
   probe_arch="${target#*/}"
   suffix=""
   [ "$probe_os" != windows ] || suffix=.exe
+  CGO_ENABLED=0 GOOS="$probe_os" GOARCH="$probe_arch" GOARM=7 go build -trimpath -ldflags="-s -w" \
+    -o "bin/check-proxy-$probe_os-$probe_arch$suffix" ./cmd/check-proxy
   for flavor in standard nootel; do
     tags=""
     [ "$flavor" != nootel ] || tags=nootel

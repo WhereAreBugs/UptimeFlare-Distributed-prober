@@ -256,7 +256,7 @@ func (a *Agent) round(ctx context.Context) error {
 					cancel()
 					return
 				}
-				a.metrics.Check(ctx, result)
+				a.metrics.Check(ctx, result, monitor.Method)
 			}
 		}()
 	}

@@ -62,6 +62,16 @@ func New() *Checker {
 	}
 }
 
+// NewWithRootCAs verifies all target and proxy TLS peers using the supplied
+// roots. Nil preserves the operating system's default trust roots.
+func NewWithRootCAs(roots *x509.CertPool) *Checker {
+	c := New()
+	if roots != nil {
+		c.transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	}
+	return c
+}
+
 func (c *Checker) Close() { c.transport.CloseIdleConnections() }
 
 func (c *Checker) Check(parent context.Context, monitor protocol.Monitor) (result protocol.Result) {
@@ -78,6 +88,23 @@ func (c *Checker) Check(parent context.Context, monitor protocol.Monitor) (resul
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	method := strings.ToUpper(monitor.Method)
+	if monitor.CheckProxy != "" {
+		proxyResult := c.checkProxy(ctx, monitor, monitor.CheckProxy, result)
+		if proxyResult.Stage != "proxy" || !monitor.CheckProxyFallback {
+			return proxyResult
+		}
+		monitor.CheckProxy, monitor.CheckProxyFallback = "", false
+		return c.Check(ctx, monitor)
+	}
+	if method == "SSL_CERT" {
+		return c.checkCertificate(ctx, monitor, result)
+	}
+	if method == "ICMP_PING" {
+		if monitor.ICMPProxyURL != "" {
+			return c.checkProxy(ctx, monitor, monitor.ICMPProxyURL, result)
+		}
+		return c.checkICMP(ctx, monitor, result)
+	}
 	if method == "TCP_PING" {
 		return c.checkTCP(ctx, monitor, result)
 	}

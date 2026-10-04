@@ -111,11 +111,23 @@ func ValidateConfig(cfg protocol.Config) error {
 	}
 	seen := make(map[string]bool, len(cfg.Monitors))
 	for _, m := range cfg.Monitors {
-		if m.ID == "" || len(m.ID) > 128 || seen[m.ID] || len(m.Target) > 4096 || m.Target == "" || m.Timeout < 0 || m.Timeout > 120000 || len(m.Body) > 65536 || len(m.Headers) > 64 || len(m.ResponseKeyword) > 4096 || len(m.ResponseForbiddenKeyword) > 4096 {
+		if m.ID == "" || len(m.ID) > 128 || seen[m.ID] || len(m.Method) > 32 || len(m.Target) > 4096 || m.Target == "" || m.Timeout < 0 || m.Timeout > 120000 || len(m.Body) > 65536 || len(m.Headers) > 64 || len(m.CheckProxyHeaders) > 64 || len(m.ResponseKeyword) > 4096 || len(m.ResponseForbiddenKeyword) > 4096 {
 			return errors.New("invalid monitor configuration")
 		}
 		if m.IntervalSeconds != 0 && (m.IntervalSeconds < protocol.MinIntervalSeconds || m.IntervalSeconds > protocol.MaxIntervalSeconds) {
 			return errors.New("monitor intervalSeconds must be zero or 60..86400")
+		}
+		if m.CertificateExpiryDays != nil && (*m.CertificateExpiryDays < 0 || *m.CertificateExpiryDays > 365) {
+			return errors.New("certificateExpiryDays must be 0..365")
+		}
+		for _, endpoint := range []string{m.CheckProxy, m.ICMPProxyURL} {
+			if endpoint == "" {
+				continue
+			}
+			u, err := url.Parse(endpoint)
+			if len(endpoint) > 4096 || err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
+				return errors.New("Go check proxies require an HTTP or HTTPS endpoint without URL credentials")
+			}
 		}
 		seen[m.ID] = true
 	}

@@ -10,7 +10,7 @@ import (
 // Recorder keeps all SDK calls out of the disabled hot path.
 type Recorder interface {
 	Identity(string)
-	Check(context.Context, protocol.Result)
+	Check(context.Context, protocol.Result, string)
 	Upload(context.Context, time.Duration, int, bool)
 	Queue(uint64, int64)
 	ConfigFailure(context.Context)
@@ -21,7 +21,7 @@ type noop struct{}
 
 func (noop) Identity(string) {}
 
-func (noop) Check(context.Context, protocol.Result)           {}
+func (noop) Check(context.Context, protocol.Result, string)   {}
 func (noop) Upload(context.Context, time.Duration, int, bool) {}
 func (noop) Queue(uint64, int64)                              {}
 func (noop) ConfigFailure(context.Context)                    {}

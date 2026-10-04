@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"runtime/metrics"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -18,16 +19,18 @@ import (
 )
 
 type recorder struct {
-	identity       atomic.Value
-	provider       *sdk.MeterProvider
-	checks         metric.Int64Counter
-	checkDuration  metric.Float64Histogram
-	uploads        metric.Int64Counter
-	uploadDuration metric.Float64Histogram
-	wireBytes      metric.Int64Counter
-	configFailures metric.Int64Counter
-	queued         atomic.Int64
-	queueBytes     atomic.Int64
+	identity             atomic.Value
+	provider             *sdk.MeterProvider
+	checks               metric.Int64Counter
+	checkDuration        metric.Float64Histogram
+	icmpDuration         metric.Float64Histogram
+	certificateRemaining metric.Float64Histogram
+	uploads              metric.Int64Counter
+	uploadDuration       metric.Float64Histogram
+	wireBytes            metric.Int64Counter
+	configFailures       metric.Int64Counter
+	queued               atomic.Int64
+	queueBytes           atomic.Int64
 }
 
 // New uses standard OTEL_EXPORTER_OTLP_* variables. Disabled means no SDK, reader, or network work.
@@ -50,12 +53,15 @@ func New(ctx context.Context, enabled bool, interval time.Duration) (Recorder, e
 	r := &recorder{provider: sdk.NewMeterProvider(
 		sdk.WithResource(res),
 		sdk.WithCardinalityLimit(64), sdk.WithReader(sdk.NewPeriodicReader(exporter, sdk.WithInterval(interval), sdk.WithTimeout(5*time.Second))),
-		sdk.WithView(sdk.NewView(sdk.Instrument{Kind: sdk.InstrumentKindHistogram}, sdk.Stream{Aggregation: sdk.AggregationExplicitBucketHistogram{Boundaries: []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 10000, 30000, 120000}}})),
+		sdk.WithView(sdk.NewView(sdk.Instrument{Unit: "ms", Kind: sdk.InstrumentKindHistogram}, sdk.Stream{Aggregation: sdk.AggregationExplicitBucketHistogram{Boundaries: []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 10000, 30000, 120000}}})),
+		sdk.WithView(sdk.NewView(sdk.Instrument{Name: "probe.certificate.remaining"}, sdk.Stream{Aggregation: sdk.AggregationExplicitBucketHistogram{Boundaries: []float64{0, 1, 3, 7, 14, 30, 60, 90, 180, 365}}})),
 	)}
 	r.identity.Store("unassigned")
 	meter := r.provider.Meter("light-prober")
 	r.checks, _ = meter.Int64Counter("probe.checks", metric.WithUnit("{check}"))
 	r.checkDuration, _ = meter.Float64Histogram("probe.check.duration", metric.WithUnit("ms"))
+	r.icmpDuration, _ = meter.Float64Histogram("probe.icmp.duration", metric.WithUnit("ms"))
+	r.certificateRemaining, _ = meter.Float64Histogram("probe.certificate.remaining", metric.WithUnit("d"))
 	r.uploads, _ = meter.Int64Counter("probe.uploads", metric.WithUnit("{batch}"))
 	r.uploadDuration, _ = meter.Float64Histogram("probe.upload.duration", metric.WithUnit("ms"))
 	r.wireBytes, _ = meter.Int64Counter("probe.upload.bytes", metric.WithUnit("By"))
@@ -87,14 +93,32 @@ func (r *recorder) Identity(id string) {
 		r.identity.Store(id)
 	}
 }
-func (r *recorder) Check(ctx context.Context, v protocol.Result) {
+func (r *recorder) Check(ctx context.Context, v protocol.Result, method string) {
 	stage := v.Stage
-	if stage == "" {
+	switch stage {
+	case "":
 		stage = "ok"
+	case "dns", "tcp", "tls", "http", "body", "icmp", "proxy", "configuration", "unknown":
+	default:
+		stage = "unknown"
 	}
-	attrs := metric.WithAttributes(attribute.Bool("up", v.Up), attribute.String("stage", stage), attribute.String("probe.id", r.identity.Load().(string)))
+	method = strings.ToUpper(method)
+	switch method {
+	case "":
+		method = "GET"
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT", "TCP_PING", "SSL_CERT", "ICMP_PING":
+	default:
+		method = "unknown"
+	}
+	attrs := metric.WithAttributes(attribute.Bool("up", v.Up), attribute.String("stage", stage), attribute.String("method", method), attribute.String("probe.id", r.identity.Load().(string)))
 	r.checks.Add(ctx, 1, attrs)
 	r.checkDuration.Record(ctx, v.LatencyMS, attrs)
+	if v.ICMPLatencyMS != nil {
+		r.icmpDuration.Record(ctx, *v.ICMPLatencyMS, attrs)
+	}
+	if v.CertificateDaysRemaining != nil {
+		r.certificateRemaining.Record(ctx, *v.CertificateDaysRemaining, attrs)
+	}
 }
 func (r *recorder) Upload(ctx context.Context, d time.Duration, bytes int, ok bool) {
 	attrs := metric.WithAttributes(attribute.Bool("success", ok), attribute.String("probe.id", r.identity.Load().(string)))
