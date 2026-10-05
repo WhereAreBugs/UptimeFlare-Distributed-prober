@@ -1,6 +1,6 @@
 # 优化实施 TODO
 
-创建日期：2026-10-05。已勾选项表示实现和本地验收完成；生产迁移、部署及资源清理另行验收，不能据此视为上线完成。
+创建日期：2026-10-05。已勾选项表示实现和本地验收完成；生产迁移、部署及资源清理另行验收，不能据此视为全部生产验收完成。
 
 依据：本 TODO 的具体要求。工作区没有找到所引用的 `UPSTREAM_IMPROVEMENT_GUIDE.md` 与 `UPSTREAM_IMPROVEMENT_GUIDE_DETAILED.md`，因此未声称逐行实现这两份未提供的指南。适配现有分布式探针、网页管理、公开缓存及通知重试机制。
 
@@ -172,9 +172,11 @@
 - [x] 部署统一 Worker、静态资源和两台新 Go 探针，保留原凭据、配置、暂停状态及队列。
 - [ ] 补完真实新样本及积压 ACK、指标后端新数据、生产管理边界与移动端历史交互验收。
 - [x] 推送分阶段提交，首次迁移后 GitHub 验证及自动部署成功。
-- [ ] 额度恢复后重新开启新 Cron 和 GitHub 自动部署门禁，确认仍为 v2。
+- [ ] 额度恢复后重新开启新 Cron 和 GitHub 自动部署门禁，确认仍为 v2；轻量查询成功还需真实配置读取成功，本次管理分类日志仍为 d1_read_quota。
 - [x] 定位切换前旧最新状态 SQL 的历史扫描放大；兼容路径点查修复将本地相同场景从 156588 读降至 718 读，191 项 Worker 回归通过，修复已以空 Cron 发布。
-- [ ] 新部署验收成功后删除全部被替代的本项目旧资源和全部本项目备份。
+- [x] 按用户后续立即清理要求删除旧 Worker/专属 DO、旧 Pages 的 21 个部署、新 Worker 的 9 个旧版本、13 个旧 CI 构建归档及全部可管理的项目手动备份；活动 D1/KV、凭据和真实队列保留。
+- [x] 移除源码旧 Pages/Terraform 入口，生产和本地启动只允许 v2；eef0b22 已部署到 status.catxxp123.top，实际 200/401 边界通过。
+- [x] 记录 D1 Time Travel 免费计划自动保留 7 天且不能单独删除恢复点的限制；见清理报告。
 - [ ] 完成生产验收报告，并停止自动续作。
 
 实现、协议和模型：[state-v2](UptimeFlare/docs/state-v2.md)。本地证据：[refactor-validation](UptimeFlare/docs/refactor-validation.md)。生产证据：[refactor-production](UptimeFlare/docs/refactor-production.md)。生产续作：[refactor-deployment](UptimeFlare/docs/refactor-deployment.md)。
