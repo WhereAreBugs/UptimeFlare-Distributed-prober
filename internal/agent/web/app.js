@@ -8,10 +8,10 @@ const node = (tag, text) => {
   return e;
 };
 const colors = {
-  up: "#22c55e",
+  up: "#059669",
   mixed: "#eab308",
-  down: "#ef4444",
-  unknown: "#9ca3af",
+  down: "#df484a",
+  unknown: "#70778c",
 };
 let page = 1,
   total = 0,
@@ -64,89 +64,237 @@ async function status() {
     $("error").textContent = e.message;
   }
 }
-function renderHistory(host, data) {
+const compact = window.matchMedia("(max-width: 48em)");
+const labels = {
+  up: "可达",
+  mixed: "部分可达",
+  down: "不可达",
+  unknown: "未知",
+};
+const average = (n) => (n === null ? "—" : `${n.toFixed(1)} ms`);
+const utcDate = (n) => new Date(n * 1000).toISOString().slice(0, 10);
+function rangeLabel(start, end, daily) {
+  return daily
+    ? `${utcDate(start)}${
+        end - start > 86400 ? " – " + utcDate(end - 1) : ""
+      } UTC`
+    : `${time(start)} – ${time(end)}`;
+}
+function selection(host, start, end, daily, status, latency) {
   host.replaceChildren();
-  const now = Math.floor(Date.now() / 300000) * 300,
-    byTime = new Map(data.buckets.map((b) => [b.time, b]));
-  const segments = [];
-  for (let t = now - 43200; t <= now; t += 300) {
-    const b = byTime.get(t),
-      kind =
-        !b || !b.checks
-          ? "unknown"
-          : !b.failures
-          ? "up"
-          : b.failures === b.checks
-          ? "down"
-          : "mixed";
-    let last = segments.at(-1);
-    if (!last || last.kind !== kind) {
-      last = { kind, start: t, end: t, checks: 0, latency: 0, width: 0 };
-      segments.push(last);
-    }
-    last.end = t + 300;
-    last.width++;
-    last.checks += b?.checks || 0;
-    last.latency += b?.latency_sum || 0;
-  }
-  const bar = node("div");
+  for (const [label, value] of [
+    ["时段", rangeLabel(start, end, daily)],
+    ["可达性", labels[status]],
+    ["平均延迟", average(latency)],
+  ])
+    host.append(node("dt", label), node("dd", value));
+}
+function timeline(host, buckets, daily) {
+  const bar = node("div"),
+    endpoints = node("div"),
+    selected = node("dl");
   bar.className = "timeline";
-  const selected = node("div");
+  bar.setAttribute("role", "group");
+  bar.setAttribute(
+    "aria-label",
+    daily ? "90 天可用率历史" : "12 小时可达性历史",
+  );
+  endpoints.className = "endpoints";
   selected.className = "selection";
-  for (const s of segments) {
-    const b = node("button");
-    b.style.flexGrow = s.width;
-    b.style.background = colors[s.kind];
-    const label = `${time(s.start)} – ${time(s.end)} · ${
-      { up: "可达", mixed: "部分可达", down: "不可达", unknown: "未知" }[s.kind]
-    } · ${s.checks ? (s.latency / s.checks).toFixed(1) + " ms" : "—"}`;
-    b.setAttribute("aria-label", label);
-    b.title = label;
-    b.onclick = () => {
-      selected.textContent = label;
-    };
-    bar.append(b);
+  for (const s of ProbeHistory.segments(buckets, compact.matches)) {
+    const button = node("button");
+    button.type = "button";
+    button.style.flexGrow = s.count;
+    button.style.background = colors[s.status];
+    const label = `${rangeLabel(s.start, s.end, daily)} · ${
+      labels[s.status]
+    } · ${average(s.average)}`;
+    const details = `${label} · ${
+      s.checks
+        ? (((s.checks - s.failures) * 100) / s.checks).toFixed(3) + "%"
+        : "无数据"
+    } · ${s.checks} 次检测，${s.failures} 次失败`;
+    button.setAttribute("aria-label", compact.matches ? label : details);
+    if (!compact.matches) button.title = details;
+    button.onclick = () =>
+      selection(selected, s.start, s.end, daily, s.status, s.average);
+    bar.append(button);
   }
-  host.append(bar, selected);
-  const samples = data.buckets.filter((b) => b.checks);
-  if (!samples.length) {
-    host.append(node("p", "暂无历史数据"));
-    return;
-  }
+  endpoints.append(
+    node("span", daily ? "90 天前" : "12 小时前"),
+    node("span", daily ? "今天 UTC" : "现在"),
+  );
+  host.append(bar, endpoints, selected);
+}
+function drawChart(host, buckets, range) {
+  host.replaceChildren();
   const ns = "http://www.w3.org/2000/svg",
-    svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("viewBox", "0 0 600 120");
+    daily = range === "90d";
+  const points = ProbeHistory.series(buckets, range),
+    values = points.filter((p) => p.value !== null);
+  const width = Math.max(
+      320,
+      Math.round(host.getBoundingClientRect().width || 640),
+    ),
+    height = 180;
+  const left = 48,
+    right = width - 12,
+    top = 14,
+    bottom = 146;
+  const peak = Math.max(1, ...values.map((p) => p.value));
+  const unit = 10 ** Math.floor(Math.log10(peak)),
+    max = daily ? 100 : Math.ceil(peak / unit) * unit;
+  const svg = document.createElementNS(ns, "svg"),
+    selected = node("dl");
+  selected.className = "selection";
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", "最近 12 小时平均延迟");
-  const max = Math.max(1, ...samples.map((b) => b.latency_sum / b.checks));
-  let d = "",
-    last = 0;
-  for (const b of samples) {
-    const x = (600 * (b.time - (now - 43200))) / 43200,
-      y = 110 - (100 * b.latency_sum) / b.checks / max;
-    d += `${!last || b.time - last > 300 ? "M" : "L"}${x.toFixed(
-      2,
-    )},${y.toFixed(2)} `;
-    last = b.time;
-  }
-  const path = document.createElementNS(ns, "path");
-  path.setAttribute("d", d);
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke", "#39857b");
-  path.setAttribute("stroke-width", "2");
-  svg.append(path);
-  if (samples.length === 1) {
-    const dot = document.createElementNS(ns, "circle");
-    dot.setAttribute("cx", (600 * (samples[0].time - (now - 43200))) / 43200);
-    dot.setAttribute(
-      "cy",
-      110 - (100 * samples[0].latency_sum) / samples[0].checks / max,
+  svg.setAttribute(
+    "aria-label",
+    daily ? "90 天可用率折线图" : "12 小时平均延迟折线图",
+  );
+  const element = (tag, attributes, text) => {
+    const e = document.createElementNS(ns, tag);
+    for (const [key, value] of Object.entries(attributes))
+      e.setAttribute(key, value);
+    if (text !== undefined) e.textContent = text;
+    svg.append(e);
+    return e;
+  };
+  const x = (i) => left + (i * (right - left)) / (points.length - 1);
+  const y = (value) => bottom - (value / max) * (bottom - top);
+  for (let i = 0; i <= 4; i++) {
+    const value = (max * i) / 4,
+      py = y(value);
+    element("line", {
+      x1: left,
+      x2: right,
+      y1: py,
+      y2: py,
+      class: "chart-grid",
+    });
+    element(
+      "text",
+      { x: left - 6, y: py + 4, "text-anchor": "end", class: "chart-label" },
+      `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}${daily ? "%" : ""}`,
     );
-    dot.setAttribute("r", "3");
-    dot.setAttribute("fill", "#39857b");
-    svg.append(dot);
+    const index = Math.round(((points.length - 1) * i) / 4),
+      date = new Date(points[index].time * 1000);
+    const label = daily
+      ? utcDate(points[index].time).slice(5)
+      : date.toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+    element(
+      "text",
+      {
+        x: x(index),
+        y: bottom + 20,
+        "text-anchor": i === 0 ? "start" : i === 4 ? "end" : "middle",
+        class: "chart-label",
+      },
+      label,
+    );
   }
-  host.append(svg, node("p", `平均延迟 · 纵轴 0 – ${max.toFixed(1)} ms`));
+  element("text", { x: left, y: 10, class: "chart-label" }, daily ? "%" : "ms");
+  let d = "",
+    gap = true;
+  points.forEach((p, i) => {
+    if (p.value === null) {
+      gap = true;
+      return;
+    }
+    d += `${gap ? "M" : "L"}${x(i).toFixed(2)},${y(p.value).toFixed(2)} `;
+    gap = false;
+  });
+  element("path", { d, fill: "none", stroke: "#70778c", "stroke-width": 2 });
+  points.forEach((p, i) => {
+    if (p.value === null) return;
+    const dot = element("circle", {
+      cx: x(i),
+      cy: y(p.value),
+      r: values.length === 1 ? 3 : 1.5,
+      fill: "#70778c",
+    });
+    if (!compact.matches) {
+      const title = document.createElementNS(ns, "title");
+      title.textContent = `${
+        daily ? utcDate(p.time) + " UTC" : time(p.time)
+      } · ${p.value.toFixed(daily ? 3 : 1)}${daily ? "%" : " ms"}`;
+      dot.append(title);
+    }
+  });
+  svg.onclick = (event) => {
+    const rect = svg.getBoundingClientRect(),
+      position = ((event.clientX - rect.left) / rect.width) * width;
+    const index = Math.max(
+      0,
+      Math.min(
+        points.length - 1,
+        Math.round(((position - left) / (right - left)) * (points.length - 1)),
+      ),
+    );
+    const p = points[index];
+    selection(selected, p.time, p.time + p.step, daily, p.status, p.average);
+  };
+  host.append(svg, selected);
+  if (!values.length) host.append(node("p", "暂无历史数据"));
+}
+function renderHistory(card) {
+  const host = card.history,
+    data = card.data,
+    now = Date.now() / 1000;
+  host.replaceChildren();
+  card.renderWindow = Math.floor(now / 300);
+  const recent = ProbeHistory.window(data, now, "12h"),
+    daily = ProbeHistory.window(data, now, "90d");
+  host.append(node("h3", "12 小时历史"));
+  timeline(host, recent, false);
+  host.append(node("h3", "90 天历史"));
+  timeline(host, daily, true);
+  const controls = node("div"),
+    chart = node("div");
+  controls.className = "chart-controls";
+  chart.className = "chart";
+  const buttons = [];
+  for (const [range, label] of [
+    ["12h", "12 小时延迟"],
+    ["90d", "90 天可用率"],
+  ]) {
+    const b = node("button", label);
+    b.type = "button";
+    buttons.push([range, b]);
+    b.onclick = () => {
+      card.range = range;
+      draw();
+    };
+    controls.append(b);
+  }
+  host.append(controls, chart);
+  function draw() {
+    const range = card.range || "12h";
+    for (const [value, b] of buttons)
+      b.setAttribute("aria-pressed", value === range ? "true" : "false");
+    drawChart(chart, range === "90d" ? daily : recent, range);
+  }
+  draw();
+}
+async function loadHistory(card, id) {
+  if (card.loading) return;
+  card.loading = true;
+  try {
+    const data = await api(`/api/history?monitor=${encodeURIComponent(id)}`);
+    if (!card.details.open || cards.get(id) !== card) return;
+    card.data = data;
+    card.loadedTime = data.latest?.time;
+    renderHistory(card);
+  } catch (e) {
+    if (card.details.open) card.history.textContent = e.message;
+  } finally {
+    card.loading = false;
+  }
 }
 async function monitors() {
   const current = ++generation;
@@ -173,21 +321,15 @@ async function monitors() {
         card = { details, summary, meta, history };
         cards.set(m.id, card);
         $("monitors").append(details);
-        details.addEventListener("toggle", async () => {
+        details.addEventListener("toggle", () => {
           if (!details.open) return;
           for (const other of cards.values())
             if (other !== card) other.details.open = false;
-          try {
-            renderHistory(
-              history,
-              await api(`/api/history?monitor=${encodeURIComponent(m.id)}`),
-            );
-            card.loadedTime = card.latest?.time;
-          } catch (e) {
-            history.textContent = e.message;
-          }
+          loadHistory(card, m.id);
         });
       }
+      // Existing cards can move between enabled/paused pages without stale order.
+      $("monitors").append(card.details);
       card.latest = m.latest;
       const l = m.latest,
         st = m.paused
@@ -205,16 +347,11 @@ async function monitors() {
       } 秒 · 超时 ${(m.timeout || 5000) / 1000} 秒 · 最近采样 ${time(l?.time)}${
         l ? " · " + l.latency_ms.toFixed(1) + " ms" : ""
       }`;
-      if (card.details.open && card.loadedTime !== l?.time) {
-        try {
-          renderHistory(
-            card.history,
-            await api(`/api/history?monitor=${encodeURIComponent(m.id)}`),
-          );
-          card.loadedTime = l?.time;
-        } catch (e) {
-          card.history.textContent = e.message;
-        }
+      if (card.details.open) {
+        if (!card.data || card.loadedTime !== l?.time)
+          await loadHistory(card, m.id);
+        else if (card.renderWindow !== Math.floor(Date.now() / 300000))
+          renderHistory(card);
       }
     }
     $("total").textContent = `${total} 个目标`;
@@ -242,3 +379,16 @@ setInterval(() => {
     monitors();
   }
 }, 15000);
+
+compact.addEventListener("change", () => {
+  for (const card of cards.values())
+    if (card.details.open && card.data) renderHistory(card);
+});
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    for (const card of cards.values())
+      if (card.details.open && card.data) renderHistory(card);
+  }, 100);
+});

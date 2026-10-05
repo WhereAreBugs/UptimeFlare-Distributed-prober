@@ -99,27 +99,80 @@ summary {
 }
 .timeline {
   display: flex;
-  gap: 0;
+  gap: 2px;
   width: 100%;
   height: 24px;
-  border-radius: 4px;
-  overflow: hidden;
+  min-width: 0;
 }
 .timeline button {
   min-width: 0;
   flex-basis: 0;
   border: 0;
-  border-radius: 0;
+  border-radius: 2px;
   padding: 0;
   height: 24px;
 }
 .selection {
-  margin: 12px 0;
+  margin: 8px 0 16px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 8px;
+  font-size: 12px;
+}
+.selection:empty {
+  display: none;
+}
+.endpoints {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+h3 {
+  font-size: 13px;
+  font-weight: 500;
+  margin: 18px 0 8px;
+}
+.chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 20px 0 8px;
+}
+.chart-controls button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.chart {
+  min-width: 0;
+}
+.chart-label {
+  fill: var(--muted);
+  font-size: 11px;
+}
+.chart-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.timeline button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
 }
 svg {
   width: 100%;
-  height: 130px;
+  height: 180px;
   display: block;
+}
+@media (max-width: 48em) {
+  .timeline {
+    gap: 0;
+    overflow: hidden;
+    border-radius: 3px;
+  }
+  .timeline button {
+    border-radius: 0;
+  }
 }
 #error {
   color: #b42318;

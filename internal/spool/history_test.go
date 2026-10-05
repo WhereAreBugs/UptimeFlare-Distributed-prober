@@ -1,11 +1,16 @@
 package spool
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"light-prober/internal/protocol"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestHistorySurvivesAcknowledgementRestartAndRetention(t *testing.T) {
@@ -49,6 +54,151 @@ func TestHistorySurvivesAcknowledgementRestartAndRetention(t *testing.T) {
 	if err != nil || history.Latest != nil || len(history.Buckets) != 0 {
 		t.Fatal("removed assignment retained", err)
 	}
+}
+
+func TestDailyHistoryUTCWindowsSuccessfulLatencyAndRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queue.db")
+	q, err := Open(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const start int64 = 1700006400 // UTC midnight.
+	for day := range 93 {
+		for _, r := range []protocol.Result{
+			{MonitorID: "web", Time: start + int64(day)*daySeconds + 1, Up: true, LatencyMS: 20},
+			{MonitorID: "web", Time: start + int64(day)*daySeconds + daySeconds - 1, Up: false, LatencyMS: 5000},
+		} {
+			if err := q.Append(r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		entries, _ := q.Peek(200)
+		if err := q.Ack(entries); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q, err = Open(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	h, err := q.History("web", start+93*daySeconds-1)
+	if err != nil || len(h.DailyBuckets) != 90 {
+		t.Fatalf("daily window: %d, %v", len(h.DailyBuckets), err)
+	}
+	if h.DailyBuckets[0].Time != start+3*daySeconds {
+		t.Fatal("UTC retention boundary incorrect")
+	}
+	for _, day := range h.DailyBuckets {
+		if day.Checks != 2 || day.Failures != 1 || day.LatencyChecks != 1 || day.LatencySum != 20 {
+			t.Fatalf("failed duration polluted daily latency: %+v", day)
+		}
+	}
+	if err := q.Append(protocol.Result{MonitorID: "web", Time: start, Up: true, LatencyMS: 99}); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = q.History("web", start+93*daySeconds-1)
+	if len(h.DailyBuckets) != 90 || h.DailyBuckets[0].Checks != 2 {
+		t.Fatal("late expired sample changed retained day")
+	}
+	if err := q.PruneHistory([]string{"other"}); err != nil {
+		t.Fatal(err)
+	}
+	h, err = q.History("web", start+93*daySeconds-1)
+	if err != nil || len(h.DailyBuckets) != 0 {
+		t.Fatal("removed target retained daily history", err)
+	}
+}
+
+func TestDailyUpgradeRecoversQueueAndAcknowledgedHistoryWithoutDoubleCounting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queue.db")
+	q, err := Open(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	recent := now/300*300 - 300
+	for _, r := range []protocol.Result{
+		{MonitorID: "web", Time: now - 2*daySeconds, Up: true, LatencyMS: 30},
+		{MonitorID: "web", Time: recent - 600 + 1, Up: true, LatencyMS: 20},
+		{MonitorID: "web", Time: recent + 1, Up: true, LatencyMS: 10},
+		{MonitorID: "web", Time: recent + 2, Up: false, LatencyMS: 5000},
+	} {
+		if err := q.Append(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, _ := q.Peek(200)
+	if err := q.Ack(entries[1:3]); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.update(func(tx *bolt.Tx) error {
+		if err := tx.DeleteBucket(dailyHistoryKey); err != nil {
+			return err
+		}
+		bucket := tx.Bucket(historyKey).Bucket([]byte("web"))
+		return bucket.ForEach(func(key, data []byte) error {
+			if len(key) != 8 {
+				return nil
+			}
+			var legacy map[string]any
+			if err := json.Unmarshal(data, &legacy); err != nil {
+				return err
+			}
+			delete(legacy, "latency_checks")
+			if legacy["failures"].(float64) > 0 {
+				legacy["latency_sum"] = 5010
+			}
+			encoded, err := json.Marshal(legacy)
+			if err != nil {
+				return err
+			}
+			return bucket.Put(key, encoded)
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	digest := func() [32]byte {
+		hash := sha256.New()
+		if err := q.view(func(tx *bolt.Tx) error {
+			return tx.Bucket(resultsKey).ForEach(func(key, value []byte) error { hash.Write(key); hash.Write(value); return nil })
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return [32]byte(hash.Sum(nil))
+	}
+	before := digest()
+	for range 2 { // Migration is idempotent on subsequent restarts.
+		if err := q.Close(); err != nil {
+			t.Fatal(err)
+		}
+		q, err = Open(path, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if digest() != before {
+			t.Fatal("upgrade modified pending queue keys/values")
+		}
+		h, err := q.History("web", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var checks, failures, latencyChecks uint64
+		var latencySum float64
+		for _, day := range h.DailyBuckets {
+			checks += day.Checks
+			failures += day.Failures
+			latencyChecks += day.LatencyChecks
+			latencySum += day.LatencySum
+		}
+		if checks != 4 || failures != 1 || latencyChecks != 2 || latencySum != 50 {
+			t.Fatalf("incorrect legacy backfill: checks=%d failures=%d latencyChecks=%d latencySum=%v", checks, failures, latencyChecks, latencySum)
+		}
+	}
+	q.Close()
 }
 func TestDatabaseBudgetStopsWithoutDroppingAndCanReuseAfterAck(t *testing.T) {
 	q, err := Open(filepath.Join(t.TempDir(), "queue.db"), MaxDatabaseBytes)

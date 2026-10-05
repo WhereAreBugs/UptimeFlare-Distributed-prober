@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"light-prober/internal/protocol"
 	"light-prober/internal/telemetry"
@@ -72,6 +73,46 @@ func TestFullQueueKeepsDashboardRunningAndCancelsCleanly(t *testing.T) {
 	}
 }
 
+func TestDashboardEnabledTargetsSortBeforePaginationWithoutChangingConfig(t *testing.T) {
+	metrics, _ := telemetry.New(context.Background(), false, time.Minute)
+	opts := Options{Server: "https://receiver.test", Token: "fixture", DataDir: t.TempDir(), Interval: time.Minute, FlushInterval: time.Minute, ConfigInterval: time.Minute, Concurrency: 1, MaxQueueBytes: 1 << 20}
+	a, err := New(opts, metrics, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	for i := range 12 {
+		a.config.DisplayMonitors = append(a.config.DisplayMonitors,
+			protocol.DisplayMonitor{ID: fmt.Sprintf("paused-%d", i), Name: fmt.Sprintf("Paused %d", i), Paused: true},
+			protocol.DisplayMonitor{ID: fmt.Sprintf("enabled-%d", i), Name: fmt.Sprintf("Enabled %d", i)})
+	}
+	var all []webMonitor
+	for page := 1; page <= 3; page++ {
+		w := httptest.NewRecorder()
+		a.webHandler(true).ServeHTTP(w, httptest.NewRequest("GET", fmt.Sprintf("http://localhost/api/monitors?page=%d", page), nil))
+		var result struct {
+			Monitors []webMonitor `json:"monitors"`
+			Total    int          `json:"total"`
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil || result.Total != 24 {
+			t.Fatal("invalid paginated monitor response")
+		}
+		all = append(all, result.Monitors...)
+	}
+	for i, monitor := range all {
+		expected := fmt.Sprintf("enabled-%d", i)
+		if i >= 12 {
+			expected = fmt.Sprintf("paused-%d", i-12)
+		}
+		if monitor.ID != expected {
+			t.Fatalf("unstable enabled-first order at %d: %s", i, monitor.ID)
+		}
+	}
+	if a.config.DisplayMonitors[0].ID != "paused-0" {
+		t.Fatal("dashboard sorting mutated remote configuration")
+	}
+}
+
 func TestReadOnlyDashboardOfflineSecretsAndPausedHistory(t *testing.T) {
 	metrics, _ := telemetry.New(context.Background(), false, time.Minute)
 	opts := Options{Server: "https://receiver.test", Token: "secret-probe-token", DataDir: t.TempDir(), Interval: time.Minute, FlushInterval: time.Minute, ConfigInterval: time.Minute, Concurrency: 1, MaxQueueBytes: 1 << 20}
@@ -96,7 +137,7 @@ func TestReadOnlyDashboardOfflineSecretsAndPausedHistory(t *testing.T) {
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	for _, path := range []string{"/", "/app.js", "/style.css", "/api/status", "/api/monitors?page=1", "/api/history?monitor=b"} {
+	for _, path := range []string{"/", "/app.js", "/history.js", "/style.css", "/api/status", "/api/monitors?page=1", "/api/history?monitor=b"} {
 		w := call(path, "localhost", http.MethodGet)
 		if w.Code != 200 {
 			t.Fatalf("%s: %d", path, w.Code)
@@ -109,9 +150,13 @@ func TestReadOnlyDashboardOfflineSecretsAndPausedHistory(t *testing.T) {
 	}
 	w := call("/api/history?monitor=b", "localhost", http.MethodGet)
 	var history struct {
-		Latest *protocol.Result `json:"latest"`
+		Latest       *protocol.Result `json:"latest"`
+		DailyBuckets []struct {
+			Checks   uint64 `json:"checks"`
+			Failures uint64 `json:"failures"`
+		} `json:"daily_buckets"`
 	}
-	if json.Unmarshal(w.Body.Bytes(), &history) != nil || history.Latest == nil {
+	if json.Unmarshal(w.Body.Bytes(), &history) != nil || history.Latest == nil || len(history.DailyBuckets) != 1 || history.DailyBuckets[0].Failures != 1 {
 		t.Fatal("acknowledged paused history unavailable")
 	}
 	if call("/api/history?monitor=not-assigned", "localhost", http.MethodGet).Code != 404 {

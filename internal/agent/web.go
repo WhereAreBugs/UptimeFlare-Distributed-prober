@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -27,9 +28,19 @@ type webMonitor struct {
 func (a *Agent) displayMonitors() []protocol.DisplayMonitor {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	var result []protocol.DisplayMonitor
 	if len(a.config.DisplayMonitors) > 0 {
-		return append([]protocol.DisplayMonitor(nil), a.config.DisplayMonitors...)
+		result = append([]protocol.DisplayMonitor(nil), a.config.DisplayMonitors...)
+	} else {
+		result = a.fallbackDisplayMonitors()
 	}
+	// Sort before pagination, preserving configured order within each group.
+	sort.SliceStable(result, func(i, j int) bool { return !result[i].Paused && result[j].Paused })
+	return result
+}
+
+// The caller holds a.mu for the configuration snapshot.
+func (a *Agent) fallbackDisplayMonitors() []protocol.DisplayMonitor {
 	result := make([]protocol.DisplayMonitor, 0, len(a.config.Monitors))
 	for _, m := range a.config.Monitors {
 		name := m.Name
@@ -144,7 +155,7 @@ func (a *Agent) webHandler(loopback bool) http.Handler {
 			}
 			send(history)
 		default:
-			if r.URL.Path != "/" && r.URL.Path != "/app.js" && r.URL.Path != "/style.css" {
+			if r.URL.Path != "/" && r.URL.Path != "/app.js" && r.URL.Path != "/history.js" && r.URL.Path != "/style.css" {
 				http.NotFound(w, r)
 				return
 			}

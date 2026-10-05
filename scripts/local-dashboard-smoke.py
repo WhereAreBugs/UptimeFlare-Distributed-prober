@@ -26,7 +26,7 @@ class Receiver(BaseHTTPRequestHandler):
             target = 'http://127.0.0.1:' + str(self.server.server_port)
             monitors = [{'id': 'good', 'name': '可达测试', 'method': 'GET', 'target': target + '/good?credential=private-target', 'intervalSeconds': 300, 'headers': {'Authorization': 'private-header'}, 'timeout': 5000}, {'id': 'bad', 'name': '失败测试', 'method': 'GET', 'target': target + '/bad', 'intervalSeconds': 300, 'timeout': 5000}]
             display = [{k: m[k] for k in ['id', 'name', 'method', 'intervalSeconds', 'timeout']} for m in monitors]
-            display += [{'id': 'paused', 'name': '暂停测试', 'method': 'GET', 'intervalSeconds': 300, 'timeout': 5000, 'paused': True}]
+            display.insert(0, {'id': 'paused', 'name': '暂停测试', 'method': 'GET', 'intervalSeconds': 300, 'timeout': 5000, 'paused': True})
             return self.send({'version': 1, 'probe_id': 'internal-probe', 'probe': {'name': 'Example / Tokyo · AS64500', 'location': 'Example / Tokyo'}, 'monitors': monitors, 'display_monitors': display})
         self.send({}, 503 if self.path == '/bad' else 200)
     def do_POST(self):
@@ -92,9 +92,15 @@ try:
     assert info['status']['last_upload_at'] > 0
     assert get(page + '/api/history?monitor=good')['buckets']
     assert get(page + '/api/history?monitor=bad')['buckets']
+    good_days = get(page + '/api/history?monitor=good')['daily_buckets']
+    bad_days = get(page + '/api/history?monitor=bad')['daily_buckets']
+    assert good_days and good_days[-1]['checks'] > 0 and good_days[-1]['failures'] == 0
+    assert good_days[-1]['latency_checks'] == good_days[-1]['checks']
+    assert bad_days and bad_days[-1]['failures'] == bad_days[-1]['checks']
+    assert bad_days[-1]['latency_checks'] == 0 and bad_days[-1]['latency_sum'] == 0
     assert state['status_requests'] == 0
     assert Path(temporary.name, 'queue.db').stat().st_mode & 0o777 == 0o600
-    print(json.dumps({'passed': True, 'realBinary': True, 'offlineCachedRegistration': True, 'historySurvivesAckAndRestart': True, 'databaseLimitGiB': 1, 'noCloudStatusRequests': True, **({'preview_url': page} if args.preview else {})}), flush=True)
+    print(json.dumps({'passed': True, 'realBinary': True, 'offlineCachedRegistration': True, 'historySurvivesAckAndRestart': True, 'dailyHistorySurvivesAckAndRestart': True, 'enabledTargetsFirst': True, 'databaseLimitGiB': 1, 'noCloudStatusRequests': True, **({'preview_url': page} if args.preview else {})}), flush=True)
     if args.preview:
         while True: time.sleep(1)
 finally:

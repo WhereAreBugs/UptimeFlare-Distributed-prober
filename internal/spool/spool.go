@@ -103,6 +103,9 @@ func Open(path string, maxBytes int64) (*Queue, error) {
 	if err == nil {
 		err = q.initializeHistory()
 	}
+	if err == nil {
+		err = q.initializeDailyHistory()
+	}
 	if err != nil {
 		_ = db.Close()
 		return nil, err
