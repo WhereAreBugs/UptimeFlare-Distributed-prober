@@ -25,6 +25,7 @@ import (
 
 type Options struct {
 	Server, Token, DataDir                  string
+	Version, WebListen, WebPassword         string
 	Interval, FlushInterval, ConfigInterval time.Duration
 	Concurrency                             int
 	MaxQueueBytes                           int64
@@ -32,24 +33,29 @@ type Options struct {
 }
 
 type Agent struct {
-	opts          Options
-	client        *client.Client
-	queue         *spool.Queue
-	checker       *check.Checker
-	metrics       telemetry.Recorder
-	log           *slog.Logger
-	mu            sync.RWMutex
-	config        protocol.Config
-	identity      string
-	configChanged chan struct{}
-	uploadChanged chan struct{}
-	resultReady   chan struct{}
-	firstResult   sync.Once
+	opts                                     Options
+	client                                   *client.Client
+	queue                                    *spool.Queue
+	checker                                  *check.Checker
+	metrics                                  telemetry.Recorder
+	log                                      *slog.Logger
+	mu                                       sync.RWMutex
+	config                                   protocol.Config
+	identity                                 string
+	configChanged                            chan struct{}
+	uploadChanged                            chan struct{}
+	resultReady                              chan struct{}
+	firstResult                              sync.Once
+	startedAt                                time.Time
+	lastConfigAt, lastUploadAt, nextUploadAt int64
+	uploadState                              string
+	checkingPaused                           bool
 }
 
 type cache struct {
-	Server string          `json:"server"`
-	Config protocol.Config `json:"config"`
+	Server    string          `json:"server"`
+	Config    protocol.Config `json:"config"`
+	UpdatedAt int64           `json:"updated_at,omitempty"`
 }
 
 type fatalError struct{ error }
@@ -68,6 +74,7 @@ func New(opts Options, metrics telemetry.Recorder, log *slog.Logger) (*Agent, er
 		return nil, err
 	}
 	a := &Agent{opts: opts, client: c, queue: q, checker: check.New(), metrics: metrics, log: log,
+		startedAt: time.Now(), uploadState: "idle",
 		configChanged: make(chan struct{}, 1), uploadChanged: make(chan struct{}, 1), resultReady: make(chan struct{}, 1)}
 	if err = a.load(); err != nil {
 		a.Close()
@@ -112,11 +119,12 @@ func (a *Agent) load() error {
 	}
 	a.config = value.Config
 	a.identity = value.Config.ProbeID
+	a.lastConfigAt = value.UpdatedAt
 	return nil
 }
 
 func (a *Agent) save(cfg protocol.Config) error {
-	data, err := json.Marshal(cache{Server: strings.TrimRight(a.opts.Server, "/"), Config: cfg})
+	data, err := json.Marshal(cache{Server: strings.TrimRight(a.opts.Server, "/"), Config: cfg, UpdatedAt: time.Now().Unix()})
 	if err != nil {
 		return err
 	}
@@ -165,10 +173,25 @@ func (a *Agent) refresh(ctx context.Context) error {
 	if err = a.save(cfg); err != nil {
 		return fatalError{fmt.Errorf("persist config: %w", err)}
 	}
-	a.mu.Lock()
+	a.mu.RLock()
 	changed := !reflect.DeepEqual(a.config, cfg)
+	a.mu.RUnlock()
+	ids := make([]string, 0, len(cfg.Monitors)+len(cfg.DisplayMonitors))
+	for _, m := range cfg.Monitors {
+		ids = append(ids, m.ID)
+	}
+	for _, m := range cfg.DisplayMonitors {
+		ids = append(ids, m.ID)
+	}
+	if changed {
+		if err = a.queue.PruneHistory(ids); err != nil {
+			return fatalError{err}
+		}
+	}
+	a.mu.Lock()
 	a.config = cfg
 	a.identity = cfg.ProbeID
+	a.lastConfigAt = time.Now().Unix()
 	a.mu.Unlock()
 	a.metrics.Identity(cfg.ProbeID)
 	if changed {
@@ -302,6 +325,9 @@ func (a *Agent) flush(ctx context.Context) (bool, error) {
 		if err = a.queue.Ack(entries); err != nil {
 			return true, fmt.Errorf("persist acknowledgement: %w", err)
 		}
+		a.mu.Lock()
+		a.lastUploadAt = time.Now().Unix()
+		a.mu.Unlock()
 		a.observeQueue()
 	}
 	n, _, err := a.queue.Stats()
@@ -315,6 +341,9 @@ func (a *Agent) uploadLoop(ctx context.Context) {
 	retrying := false
 	lastFlush, nextAt := time.Now(), time.Now()
 	reset := func(at time.Time) {
+		a.mu.Lock()
+		a.nextUploadAt = at.Unix()
+		a.mu.Unlock()
 		if !timer.Stop() {
 			select {
 			case <-timer.C:
@@ -342,7 +371,16 @@ func (a *Agent) uploadLoop(ctx context.Context) {
 				}
 			}
 		case <-timer.C:
+			a.mu.Lock()
+			a.uploadState = "uploading"
+			a.mu.Unlock()
 			more, err := a.flush(ctx)
+			a.mu.Lock()
+			a.uploadState = "idle"
+			if err != nil {
+				a.uploadState = "retrying"
+			}
+			a.mu.Unlock()
 			lastFlush = time.Now()
 			next := a.flushCadence()
 			retrying = err != nil
@@ -382,6 +420,14 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.log.Warn("configuration unavailable; using cached monitors if present", "error", err)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	web, err := a.startWeb(runCtx)
+	if err != nil {
+		return err
+	}
+	if web != nil {
+		defer web.Close()
+	}
 	var bg sync.WaitGroup
 	fatalCh := make(chan error, 1)
 	bg.Add(2)
@@ -414,7 +460,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		defer stop()
 		_, _ = a.flush(shutdown)
 	}()
-	if err := a.runChecks(runCtx); err != nil {
+	if err := a.runChecksWithCapacity(runCtx); err != nil {
 		return err
 	}
 	select {
@@ -422,5 +468,39 @@ func (a *Agent) Run(ctx context.Context) error {
 		return err
 	default:
 		return nil
+	}
+}
+
+// A full outbox pauses collection while keeping uploads and the dashboard
+// running. Resume only after enough space for a maximum-sized result exists.
+func (a *Agent) runChecksWithCapacity(ctx context.Context) error {
+	for {
+		err := a.runChecks(ctx)
+		if !errors.Is(err, spool.ErrFull) {
+			return err
+		}
+		a.mu.Lock()
+		a.checkingPaused = true
+		a.mu.Unlock()
+		a.log.Warn("database capacity reached; checking paused, existing queue retained")
+		for {
+			timer := time.NewTimer(30 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C:
+			}
+			ready, err := a.queue.CanResume()
+			if err != nil {
+				return err
+			}
+			if ready {
+				break
+			}
+		}
+		a.mu.Lock()
+		a.checkingPaused = false
+		a.mu.Unlock()
 	}
 }

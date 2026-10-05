@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>探针详情</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1 id="name">探针详情</h1>
+        <span id="registered" class="badge"></span>
+      </header>
+      <p id="error" role="alert" hidden></p>
+      <section>
+        <h2>注册信息</h2>
+        <dl id="registration"></dl>
+      </section>
+      <section>
+        <h2>待上传队列</h2>
+        <dl id="queue"></dl>
+        <progress
+          id="usage"
+          max="1"
+          value="0"
+          aria-label="数据库使用量"
+        ></progress>
+      </section>
+      <section>
+        <header>
+          <h2>目标历史</h2>
+          <span id="total"></span>
+        </header>
+        <div id="monitors"></div>
+        <nav>
+          <button id="previous">上一页</button><span id="page"></span
+          ><button id="next">下一页</button>
+        </nav>
+      </section>
+    </main>
+  </body>
+</html>

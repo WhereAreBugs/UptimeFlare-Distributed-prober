@@ -39,7 +39,7 @@ async function until(condition, description, timeout = 45000) {
 async function listen(server) { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port }
 async function close(server) { if (!server?.listening) return; server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }
 function launch(id) {
-  const child = spawn(binary, ['--server', `http://127.0.0.1:${proxy.address().port}`, '--allow-insecure', '--data-dir', join(temporary, id), '--interval', '1s', '--flush-interval', '1s', '--config-interval', '1s'], {
+  const child = spawn(binary, ['--server', `http://127.0.0.1:${proxy.address().port}`, '--allow-insecure', '--web-listen', '127.0.0.1:0', '--data-dir', join(temporary, id), '--interval', '1s', '--flush-interval', '1s', '--config-interval', '1s'], {
     cwd: root, env: { ...process.env, LIGHT_PROBER_TOKEN: tokens[id], OTEL_SDK_DISABLED: 'true' }, stdio: ['ignore', 'pipe', 'pipe'],
   })
   children.add(child)

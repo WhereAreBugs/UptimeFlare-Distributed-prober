@@ -34,6 +34,7 @@ func monitorInterval(monitor protocol.Monitor, fallback time.Duration) time.Dura
 
 func sameCheck(first, second protocol.Monitor) bool {
 	first.IntervalSeconds, second.IntervalSeconds = 0, 0
+	first.Name, second.Name = "", ""
 	return reflect.DeepEqual(first, second)
 }
 

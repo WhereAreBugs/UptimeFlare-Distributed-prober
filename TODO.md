@@ -183,3 +183,13 @@
 - [ ] 完成生产验收报告，并停止自动续作。
 
 实现、协议和模型：[state-v2](UptimeFlare/docs/state-v2.md)。本地证据：[refactor-validation](UptimeFlare/docs/refactor-validation.md)。生产证据：[refactor-production](UptimeFlare/docs/refactor-production.md)。生产续作：[refactor-deployment](UptimeFlare/docs/refactor-deployment.md)。
+
+## 探针本地详情页（2026-10-05）
+
+- [x] 按后续要求只保留本机只读页面，不开发云端探针页，不上报积压统计，不新增 DO/D1 存储。
+- [x] 注册缓存、系统版本、队列条数/字节/数据库大小/队首时间、ACK 与重试状态。
+- [x] 1 GiB 数据库总预算，滚动历史与队列同事务，ACK 后历史保留；满容量暂停采集，补传和页面继续运行。
+- [x] 每目标最近 12 小时时间轴、延迟折线，10 目标分页、单目标展开；390px 手机合并区间、原页简要数据。
+- [x] 默认回环监听，外部监听强制独立鉴权，页面响应不含令牌/请求头/体/敏感 URL，不显示 ID。
+- [x] 本地持久化、重启/断网、真实进程与访问边界验收。
+- [ ] 发布服务器显示元数据及升级两台实机，记录版本与既有队列保留。

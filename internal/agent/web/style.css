@@ -1,0 +1,150 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7fa;
+  --card: #fff;
+  --ink: #243247;
+  --border: #e2e7ee;
+  --muted: #67758a;
+  --accent: #39857b;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font:
+    14px system-ui,
+    sans-serif;
+}
+main {
+  max-width: 950px;
+  margin: 24px auto;
+  padding: 0 16px;
+}
+header,
+nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+h1 {
+  font-size: 24px;
+}
+h2 {
+  font-size: 17px;
+  margin: 0 0 16px;
+}
+section {
+  background: var(--card);
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 16px;
+  min-width: 0;
+}
+dl {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) minmax(0, 2fr);
+  gap: 10px;
+  margin: 0;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+progress {
+  width: 100%;
+  height: 12px;
+  margin-top: 18px;
+  accent-color: var(--accent);
+}
+button {
+  font: inherit;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.4;
+}
+nav {
+  justify-content: center;
+  margin-top: 16px;
+}
+.badge {
+  color: var(--accent);
+}
+details {
+  border-top: 1px solid var(--border);
+  padding: 12px 0;
+  min-width: 0;
+}
+summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.meta {
+  color: var(--muted);
+  margin: 8px 0;
+  font-size: 12px;
+}
+.timeline {
+  display: flex;
+  gap: 0;
+  width: 100%;
+  height: 24px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.timeline button {
+  min-width: 0;
+  flex-basis: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  height: 24px;
+}
+.selection {
+  margin: 12px 0;
+}
+svg {
+  width: 100%;
+  height: 130px;
+  display: block;
+}
+#error {
+  color: #b42318;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131a23;
+    --card: #1c2634;
+    --ink: #dbe4f1;
+    --border: #334255;
+    --muted: #a1acc0;
+  }
+}
+@media (max-width: 600px) {
+  main {
+    margin: 12px auto;
+    padding: 0 10px;
+  }
+  section {
+    padding: 14px;
+  }
+  h1 {
+    font-size: 20px;
+  }
+  dl {
+    grid-template-columns: 110px minmax(0, 1fr);
+  }
+}

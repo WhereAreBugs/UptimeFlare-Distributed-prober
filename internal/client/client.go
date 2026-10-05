@@ -106,12 +106,19 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 }
 
 func ValidateConfig(cfg protocol.Config) error {
-	if cfg.Version != protocol.Version || cfg.ProbeID == "" || len(cfg.ProbeID) > 128 || len(cfg.Monitors) > protocol.MaxMonitors {
+	if cfg.Version != protocol.Version || cfg.ProbeID == "" || len(cfg.ProbeID) > 128 || len(cfg.Monitors) > protocol.MaxMonitors || len(cfg.DisplayMonitors) > protocol.MaxMonitors || len(cfg.Probe.Name) > 1024 || len(cfg.Probe.Location) > 1024 {
 		return errors.New("unsupported or oversized probe configuration")
 	}
 	seen := make(map[string]bool, len(cfg.Monitors))
+	displayIDs := make(map[string]bool, len(cfg.DisplayMonitors))
+	for _, m := range cfg.DisplayMonitors {
+		if m.ID == "" || len(m.ID) > 128 || displayIDs[m.ID] || len(m.Name) > 200 || len(m.Method) > 32 || m.IntervalSeconds < 60 || m.IntervalSeconds > 86400 || m.Timeout < 1 || m.Timeout > 120000 {
+			return errors.New("invalid display monitor")
+		}
+		displayIDs[m.ID] = true
+	}
 	for _, m := range cfg.Monitors {
-		if m.ID == "" || len(m.ID) > 128 || seen[m.ID] || len(m.Method) > 32 || len(m.Target) > 4096 || m.Target == "" || m.Timeout < 0 || m.Timeout > 120000 || len(m.Body) > 65536 || len(m.Headers) > 64 || len(m.CheckProxyHeaders) > 64 || len(m.ResponseKeyword) > 4096 || len(m.ResponseForbiddenKeyword) > 4096 {
+		if m.ID == "" || len(m.ID) > 128 || len(m.Name) > 200 || seen[m.ID] || len(m.Method) > 32 || len(m.Target) > 4096 || m.Target == "" || m.Timeout < 0 || m.Timeout > 120000 || len(m.Body) > 65536 || len(m.Headers) > 64 || len(m.CheckProxyHeaders) > 64 || len(m.ResponseKeyword) > 4096 || len(m.ResponseForbiddenKeyword) > 4096 {
 			return errors.New("invalid monitor configuration")
 		}
 		if m.IntervalSeconds != 0 && (m.IntervalSeconds < protocol.MinIntervalSeconds || m.IntervalSeconds > protocol.MaxIntervalSeconds) {

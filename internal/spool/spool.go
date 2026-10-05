@@ -21,8 +21,10 @@ import (
 )
 
 const (
-	maxResultBytes = 64 << 10
-	recordHeader   = 5 // format version plus CRC32C of JSON payload
+	// Includes queue, retained history, indexes and reusable bbolt pages.
+	MaxDatabaseBytes int64 = 1 << 30
+	maxResultBytes         = 64 << 10
+	recordHeader           = 5 // format version plus CRC32C of JSON payload
 )
 
 var checksumTable = crc32.MakeTable(crc32.Castagnoli)
@@ -49,10 +51,11 @@ type Entry struct {
 }
 
 type Queue struct {
-	db       *bolt.DB
-	maxBytes int64
-	mu       sync.RWMutex
-	closed   bool
+	db               *bolt.DB
+	maxBytes         int64
+	maxDatabaseBytes int64
+	mu               sync.RWMutex
+	closed           bool
 }
 
 // Open takes an exclusive file lock. maxBytes limits serialized result payload
@@ -67,8 +70,13 @@ func Open(path string, maxBytes int64) (*Queue, error) {
 	if err := os.Chmod(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("protect queue directory: %w", err)
 	}
-	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
-		return nil, errors.New("queue path must be a regular file")
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("queue path must be a regular file")
+		}
+		if info.Size() > MaxDatabaseBytes {
+			return nil, errors.New("database exceeds 1 GiB; existing data preserved")
+		}
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("inspect queue file: %w", err)
 	}
@@ -79,7 +87,8 @@ func Open(path string, maxBytes int64) (*Queue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open queue: %w", err)
 	}
-	q := &Queue{db: db, maxBytes: maxBytes}
+	db.AllocSize = db.Info().PageSize
+	q := &Queue{db: db, maxBytes: min(maxBytes, MaxDatabaseBytes), maxDatabaseBytes: MaxDatabaseBytes}
 	if err = os.Chmod(path, 0600); err == nil {
 		err = db.Update(func(tx *bolt.Tx) error {
 			if err := initialize(tx); err != nil {
@@ -90,6 +99,9 @@ func Open(path string, maxBytes int64) (*Queue, error) {
 	}
 	if err == nil {
 		err = db.View(verify)
+	}
+	if err == nil {
+		err = q.initializeHistory()
 	}
 	if err != nil {
 		_ = db.Close()
@@ -233,7 +245,7 @@ func (q *Queue) Append(result protocol.Result) error {
 		if err != nil {
 			return err
 		}
-		if int64(len(data)) > q.maxBytes-used {
+		if !q.hasSpace(tx, used, int64(len(data))) {
 			return ErrFull
 		}
 		entries := tx.Bucket(resultsKey)
@@ -264,6 +276,9 @@ func (q *Queue) Append(result protocol.Result) error {
 			if err := tx.Bucket(monitorTimesKey).Put(monitorTimeKey(result.MonitorID), encode(uint64(max(int64(0), result.Time)))); err != nil {
 				return err
 			}
+		}
+		if err := appendHistory(tx, result); err != nil {
+			return err
 		}
 		return putStats(tx, count+1, used+int64(len(data)))
 	})
@@ -336,6 +351,11 @@ func (q *Queue) Ack(entries []Entry) error {
 				return err
 			}
 		}
+		if len(entries) > 0 {
+			if err := tx.Bucket(metaKey).Put([]byte("last-ack-at"), encode(uint64(time.Now().Unix()))); err != nil {
+				return err
+			}
+		}
 		return putStats(tx, count, used)
 	})
 }
@@ -345,6 +365,27 @@ func (q *Queue) Stats() (count uint64, payloadBytes int64, err error) {
 		var readErr error
 		count, payloadBytes, readErr = stats(tx)
 		return readErr
+	})
+	return
+}
+
+func (q *Queue) hasSpace(tx *bolt.Tx, used, size int64) bool {
+	if size > q.maxBytes-used {
+		return false
+	}
+	// Reserve copy-on-write nodes and freelist space, including ACKs when full.
+	reserve := int64(8<<20) + size*4
+	reusable := size*4 + (256 << 10)
+	return tx.Size()+reserve <= q.maxDatabaseBytes || int64(q.db.Stats().FreePageN*q.db.Info().PageSize) >= reusable
+}
+func (q *Queue) CanResume() (ready bool, err error) {
+	err = q.view(func(tx *bolt.Tx) error {
+		_, used, err := stats(tx)
+		if err != nil {
+			return err
+		}
+		ready = q.hasSpace(tx, used, maxResultBytes)
+		return nil
 	})
 	return
 }

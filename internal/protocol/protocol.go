@@ -14,6 +14,7 @@ const (
 
 type Monitor struct {
 	ID                       string            `json:"id"`
+	Name                     string            `json:"name,omitempty"`
 	Method                   string            `json:"method"`
 	Target                   string            `json:"target"`
 	Timeout                  int               `json:"timeout,omitempty"`         // milliseconds
@@ -31,9 +32,24 @@ type Monitor struct {
 }
 
 type Config struct {
-	Version  int       `json:"version"`
-	ProbeID  string    `json:"probe_id"`
-	Monitors []Monitor `json:"monitors"`
+	Version         int              `json:"version"`
+	ProbeID         string           `json:"probe_id"`
+	Monitors        []Monitor        `json:"monitors"`
+	Probe           Registration     `json:"probe,omitempty"`
+	DisplayMonitors []DisplayMonitor `json:"display_monitors,omitempty"`
+}
+
+type Registration struct {
+	Name     string `json:"name"`
+	Location string `json:"location"`
+}
+type DisplayMonitor struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Method          string `json:"method"`
+	Paused          bool   `json:"paused"`
+	IntervalSeconds int    `json:"intervalSeconds"`
+	Timeout         int    `json:"timeout"`
 }
 
 type Result struct {

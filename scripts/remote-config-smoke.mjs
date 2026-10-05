@@ -66,7 +66,7 @@ async function close(server) {
 }
 function launch(id) {
   const child = spawn(binary, [
-    '--server', `http://127.0.0.1:${proxy.address().port}`, '--allow-insecure',
+    '--server', `http://127.0.0.1:${proxy.address().port}`, '--allow-insecure', '--web-listen', '127.0.0.1:0',
     '--data-dir', join(temporary, id), '--interval', '1s', '--config-interval', '1s', '--flush-interval', '1s',
   ], { cwd: root, env: { ...process.env, LIGHT_PROBER_TOKEN: tokens[id], OTEL_SDK_DISABLED: 'true' }, stdio: ['ignore', 'pipe', 'pipe'] })
   children.add(child)

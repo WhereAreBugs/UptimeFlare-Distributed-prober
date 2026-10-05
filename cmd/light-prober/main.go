@@ -20,13 +20,16 @@ var version = "dev"
 
 func run() error {
 	opts := agent.Options{}
+	opts.Version = version
+	flag.StringVar(&opts.WebListen, "web-listen", "127.0.0.1:9187", "read-only local dashboard address; empty disables it")
+	opts.WebPassword = os.Getenv("LIGHT_PROBER_WEB_PASSWORD")
 	flag.StringVar(&opts.Server, "server", os.Getenv("LIGHT_PROBER_SERVER"), "UptimeFlare base URL (or LIGHT_PROBER_SERVER)")
 	flag.StringVar(&opts.DataDir, "data-dir", "", "persistent local data directory (default: user config directory/light-prober)")
 	flag.DurationVar(&opts.Interval, "interval", protocol.DefaultIntervalSeconds*time.Second, "legacy fallback check interval; overridden by each remote monitor's intervalSeconds")
 	flag.DurationVar(&opts.FlushInterval, "flush-interval", 5*time.Minute, "batch upload interval (capped at the minimum monitor interval)")
 	flag.DurationVar(&opts.ConfigInterval, "config-interval", 5*time.Minute, "configuration refresh interval")
 	flag.IntVar(&opts.Concurrency, "concurrency", 4, "maximum concurrent target checks (1..32)")
-	maxMiB := flag.Int64("max-queue-mib", 256, "maximum unacknowledged payload bytes; full queue stops checks")
+	maxMiB := flag.Int64("max-queue-mib", 1024, "maximum pending payload MiB (1..1024); database including overhead capped at 1 GiB")
 	flag.BoolVar(&opts.Compress, "gzip", true, "compress HTTP batch requests with gzip")
 	flag.BoolVar(&opts.AllowInsecure, "allow-insecure", false, "allow HTTP receiver for local testing")
 	otelEnabled := flag.Bool("telemetry", false, "enable OpenTelemetry OTLP HTTP metrics (OTEL_EXPORTER_OTLP_* env)")
@@ -42,8 +45,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if *maxMiB < 1 || *maxMiB > 1024*1024 {
-		return fmt.Errorf("max-queue-mib must be 1..1048576")
+	if *maxMiB < 1 || *maxMiB > 1024 {
+		return fmt.Errorf("max-queue-mib must be 1..1024")
 	}
 	opts.MaxQueueBytes = *maxMiB << 20
 	opts.Token = os.Getenv("LIGHT_PROBER_TOKEN")
