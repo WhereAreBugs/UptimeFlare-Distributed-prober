@@ -159,19 +159,22 @@
 - [x] 增加 workerd 集成测试和统一 Worker 构建验证；Go 如有修改，完成测试、竞态检查及跨平台构建。
 - [x] 回归公开摘要、历史、事故、徽章、管理员、管理 Token、探针及既有认证边界。
 - [x] 用同一虚构负载比较稳定、故障转换、超时、通知和补传场景。
-- [ ] 记录 D1 读写与 SQL 数、Worker CPU、DO 请求与耗时、响应体及 DOM 数量。
-  - 本地 D1 元数据、DO 请求/墙钟、响应体、DOM 已记录；CPU 在本地 workerd 不可获取，待生产 Cloudflare 遥测验收，不能用墙钟替代。
+- [x] 记录 D1 读写与 SQL 数、Worker CPU、DO 请求与耗时、响应体及 DOM 数量。
+  - 本地计数与页面负载已记录；生产采集 56 条平台执行记录，CPU 0–13ms，另行记录根/DO SQL 和 RPC 墙钟。短窗口实测不代表完整负载保证，见生产报告。
 - [x] 交付分阶段提交、接口及协议说明、数据模型、迁移回滚工具、测试结果和资源对比。
 - [x] 分别标明已实现、已本地验证、待生产验证的内容，不将本地成功视为部署完成。
 
-## 生产验收（等待额度恢复）
+## 生产验收（已迁移部署，剩余验收等待再次额度恢复）
 
 - [x] 按用户授权停用旧 Worker 的 Cron、workers.dev 和预览入口，并读取配置确认。
 - [x] 设置新加坡时间 08:05 的自动续作，额度仍耗尽时不重复大查询、不自动升级付费。
-- [ ] 完整导出生产数据库，停止全部旧写入口并排空在途租约，完成完整语义迁移。
-- [ ] 部署统一 Worker、静态资源和两台新 Go 探针；验证真实样本、ACK、遥测及管理边界。
-- [ ] 推送分阶段提交，启用迁移后版本的 GitHub 自动部署。
+- [x] 完整导出生产数据库，冻结旧当前生产入口并排空在途租约，完成完整语义迁移（3160 行）。
+- [x] 部署统一 Worker、静态资源和两台新 Go 探针，保留原凭据、配置、暂停状态及队列。
+- [ ] 补完真实新样本及积压 ACK、指标后端新数据、生产管理边界与移动端历史交互验收。
+- [x] 推送分阶段提交，首次迁移后 GitHub 验证及自动部署成功。
+- [ ] 额度恢复后重新开启新 Cron 和 GitHub 自动部署门禁，确认仍为 v2。
+- [x] 定位切换前旧最新状态 SQL 的历史扫描放大；兼容路径点查修复将本地相同场景从 156588 读降至 718 读，191 项 Worker 回归通过，修复已以空 Cron 发布。
 - [ ] 新部署验收成功后删除全部被替代的本项目旧资源和全部本项目备份。
 - [ ] 完成生产验收报告，并停止自动续作。
 
-实现、协议和模型：[state-v2](UptimeFlare/docs/state-v2.md)。本地证据：[refactor-validation](UptimeFlare/docs/refactor-validation.md)。生产续作：[refactor-deployment](UptimeFlare/docs/refactor-deployment.md)。
+实现、协议和模型：[state-v2](UptimeFlare/docs/state-v2.md)。本地证据：[refactor-validation](UptimeFlare/docs/refactor-validation.md)。生产证据：[refactor-production](UptimeFlare/docs/refactor-production.md)。生产续作：[refactor-deployment](UptimeFlare/docs/refactor-deployment.md)。
