@@ -123,6 +123,8 @@ export OTEL_EXPORTER_OTLP_HEADERS='Authorization=Bearer your-telemetry-token'
 
 使用官方 OpenTelemetry Go SDK 的 OTLP HTTP/protobuf 导出器，gzip 压缩。Collector 由你配置，与状态页接收端分别配置。支持标准 `OTEL_EXPORTER_OTLP_*` 环境变量。默认不初始化 SDK、导出线程或遥测网络请求；开启后默认每分钟导出，最低间隔 10 秒，导出超时 5 秒，指标属性基数上限 64。
 
+OpenObserve 可为每台探针创建独立的 Ingestion Token，仅授权数据写入。已验证的 v1.0.4 使用 `组织 ID:写入令牌` 构造 HTTP Basic 鉴权，例如 `default:o2oi_...`，再将 Base64 后的值作为 `Authorization`；放入 `OTEL_EXPORTER_OTLP_HEADERS` 时，对值中的空格和 `=` 等字符做 URL 编码。指标入口为 `/api/<组织 ID>/v1/metrics`。写入令牌访问查询或管理接口返回 401 属于预期行为，探针无需查询权限。不要把 OpenObserve 管理员密码配置到探针。该版本的认证及权限行为见 [官方令牌测试](https://github.com/openobserve/openobserve/blob/v1.0.4/tests/api-testing/tests/orgs/test_ingestion_tokens.py)。
+
 | 指标 | 用途 |
 | --- | --- |
 | `probe.checks`, `probe.check.duration` | 探测数、延迟，按 method、up 与 stage 区分 |
