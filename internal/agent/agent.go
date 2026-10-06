@@ -68,6 +68,7 @@ func New(opts Options, metrics telemetry.Recorder, log *slog.Logger) (*Agent, er
 	if err != nil {
 		return nil, err
 	}
+	c.SetTelemetry(metrics)
 	q, err := spool.Open(filepath.Join(opts.DataDir, "queue.db"), opts.MaxQueueBytes)
 	if err != nil {
 		c.Close()
@@ -154,7 +155,10 @@ func (a *Agent) save(cfg protocol.Config) error {
 	return syncConfigDirectory(a.opts.DataDir)
 }
 
-func (a *Agent) refresh(ctx context.Context) error {
+func (a *Agent) refresh(ctx context.Context) (refreshErr error) {
+	ctx, end := a.metrics.Start(ctx, "config.refresh")
+	start := time.Now()
+	defer func() { a.metrics.Operation(ctx, "config.refresh", time.Since(start), refreshErr); end(refreshErr) }()
 	cfg, err := a.client.Config(ctx)
 	if err != nil {
 		a.metrics.ConfigFailure(ctx)
@@ -206,9 +210,13 @@ func (a *Agent) notifyConfig() {
 }
 
 func (a *Agent) observeQueue() {
-	n, b, err := a.queue.Stats()
+	if !a.metrics.Enabled() {
+		return
+	}
+	snapshot, err := a.queue.Snapshot()
 	if err == nil {
-		a.metrics.Queue(n, b)
+		a.metrics.Queue(snapshot.Count, snapshot.Bytes)
+		a.metrics.Storage(snapshot.DatabaseBytes, snapshot.DatabaseLimit, snapshot.OldestAt)
 	}
 }
 
@@ -305,11 +313,16 @@ send:
 // flush bounds each recovery pass to ten batches so a large backlog yields between passes.
 func (a *Agent) flush(ctx context.Context) (bool, error) {
 	for i := 0; i < 10; i++ {
+		batchCtx, end := a.metrics.Start(ctx, "upload.batch")
+		startPeek := time.Now()
 		entries, err := a.queue.Peek(protocol.MaxBatchResults)
+		a.metrics.Operation(batchCtx, "queue.peek", time.Since(startPeek), err)
 		if err != nil {
+			end(err)
 			return false, err
 		}
 		if len(entries) == 0 {
+			end(nil)
 			return false, nil
 		}
 		results := make([]protocol.Result, len(entries))
@@ -317,12 +330,19 @@ func (a *Agent) flush(ctx context.Context) (bool, error) {
 			results[i] = e.Result
 		}
 		start := time.Now()
-		wire, err := a.client.Upload(ctx, results)
-		a.metrics.Upload(ctx, time.Since(start), wire, err == nil)
+		wire, err := a.client.Upload(batchCtx, results)
+		a.metrics.Upload(batchCtx, time.Since(start), wire, err == nil)
 		if err != nil {
+			end(err)
 			return true, err
 		}
-		if err = a.queue.Ack(entries); err != nil {
+		ackCtx, ackEnd := a.metrics.Start(batchCtx, "queue.ack")
+		ackStart := time.Now()
+		err = a.queue.Ack(entries)
+		a.metrics.Operation(ackCtx, "queue.ack", time.Since(ackStart), err)
+		ackEnd(err)
+		end(err)
+		if err != nil {
 			return true, fmt.Errorf("persist acknowledgement: %w", err)
 		}
 		a.mu.Lock()

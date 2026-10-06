@@ -18,15 +18,17 @@ import (
 	"time"
 
 	"light-prober/internal/protocol"
+	"light-prober/internal/telemetry"
 )
 
 const maxResponse = 1 << 20
 
 type Client struct {
-	base     string
-	token    string
-	compress bool
-	http     *http.Client
+	base      string
+	token     string
+	compress  bool
+	http      *http.Client
+	telemetry telemetry.Recorder
 }
 
 type HTTPError struct {
@@ -53,12 +55,22 @@ func New(server, token string, compress, allowInsecure bool) (*Client, error) {
 		http: &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
+func (c *Client) SetTelemetry(r telemetry.Recorder) { c.telemetry = r }
+
 func (c *Client) Close() { c.http.CloseIdleConnections() }
 
-func (c *Client) request(ctx context.Context, method, path string, body []byte, compressed bool, result any) error {
+func (c *Client) request(ctx context.Context, method, path string, body []byte, compressed bool, result any) (requestErr error) {
+	if c.telemetry != nil {
+		var end func(error)
+		ctx, end = c.telemetry.Start(ctx, "receiver."+method)
+		defer func() { end(requestErr) }()
+	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, bytes.NewReader(body))
 	if err != nil {
 		return errors.New("cannot construct receiver request")
+	}
+	if c.telemetry != nil {
+		c.telemetry.Inject(ctx, req.Header)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")

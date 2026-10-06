@@ -177,7 +177,16 @@ func (a *Agent) configuredMonitors() []protocol.Monitor {
 	return a.config.Monitors
 }
 
-func (a *Agent) perform(job checkJob) error {
+func (a *Agent) perform(job checkJob) (operationErr error) {
+	checkCtx, end := a.metrics.Start(job.ctx, "check.execute")
+	job.ctx = checkCtx
+	started := time.Now()
+	a.metrics.Active(1)
+	defer func() {
+		a.metrics.Active(-1)
+		a.metrics.Operation(job.ctx, "check.execute", time.Since(started), operationErr)
+		end(operationErr)
+	}()
 	if job.ctx.Err() != nil {
 		return nil
 	}
@@ -186,7 +195,12 @@ func (a *Agent) perform(job checkJob) error {
 	if job.ctx.Err() != nil {
 		return nil
 	}
-	if err := a.queue.Append(result); err != nil {
+	persistCtx, persistEnd := a.metrics.Start(job.ctx, "queue.append")
+	persistStart := time.Now()
+	err := a.queue.Append(result)
+	a.metrics.Operation(persistCtx, "queue.append", time.Since(persistStart), err)
+	persistEnd(err)
+	if err != nil {
 		return fmt.Errorf("cannot persist result; checking stopped: %w", err)
 	}
 	a.metrics.Check(job.ctx, result, job.monitor.Method)

@@ -32,7 +32,7 @@ func run() error {
 	maxMiB := flag.Int64("max-queue-mib", 1024, "maximum pending payload MiB (1..1024); database including overhead capped at 1 GiB")
 	flag.BoolVar(&opts.Compress, "gzip", true, "compress HTTP batch requests with gzip")
 	flag.BoolVar(&opts.AllowInsecure, "allow-insecure", false, "allow HTTP receiver for local testing")
-	otelEnabled := flag.Bool("telemetry", false, "enable OpenTelemetry OTLP HTTP metrics (OTEL_EXPORTER_OTLP_* env)")
+	otelEnabled := flag.Bool("telemetry", false, "enable OpenTelemetry runtime metrics and sampled traces (OTEL_EXPORTER_OTLP_* env)")
 	otelInterval := flag.Duration("telemetry-interval", time.Minute, "metric export interval (minimum 10s)")
 	printVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -52,7 +52,7 @@ func run() error {
 	opts.Token = os.Getenv("LIGHT_PROBER_TOKEN")
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	metrics, err := telemetry.New(ctx, *otelEnabled, *otelInterval)
+	metrics, err := telemetry.New(ctx, *otelEnabled, *otelInterval, version)
 	if err != nil {
 		return err
 	}

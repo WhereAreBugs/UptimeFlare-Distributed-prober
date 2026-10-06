@@ -116,25 +116,28 @@ export LIGHT_PROBER_CHECK_PROXY_TOKEN='replace-with-a-random-token-of-at-least-1
 
 ```sh
 export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://collector.example/v1/metrics
-# 若 Collector 需要鉴权：
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://collector.example/v1/traces
 export OTEL_EXPORTER_OTLP_HEADERS='Authorization=Bearer your-telemetry-token'
+export OTEL_TRACES_SAMPLER_ARG=0.05
 ./light-prober --telemetry --telemetry-interval 1m
 ```
 
-使用官方 OpenTelemetry Go SDK 的 OTLP HTTP/protobuf 导出器，gzip 压缩。Collector 由你配置，与状态页接收端分别配置。支持标准 `OTEL_EXPORTER_OTLP_*` 环境变量。默认不初始化 SDK、导出线程或遥测网络请求；开启后默认每分钟导出，最低间隔 10 秒，导出超时 5 秒，指标属性基数上限 64。
-
-OpenObserve 可为每台探针创建独立的 Ingestion Token，仅授权数据写入。已验证的 v1.0.4 使用 `组织 ID:写入令牌` 构造 HTTP Basic 鉴权，例如 `default:o2oi_...`，再将 Base64 后的值作为 `Authorization`；放入 `OTEL_EXPORTER_OTLP_HEADERS` 时，对值中的空格和 `=` 等字符做 URL 编码。指标入口为 `/api/<组织 ID>/v1/metrics`。写入令牌访问查询或管理接口返回 401 属于预期行为，探针无需查询权限。不要把 OpenObserve 管理员密码配置到探针。该版本的认证及权限行为见 [官方令牌测试](https://github.com/openobserve/openobserve/blob/v1.0.4/tests/api-testing/tests/orgs/test_ingestion_tokens.py)。
+使用官方 OpenTelemetry Go SDK 的 OTLP HTTP/protobuf 导出器，gzip 压缩。未开启 `--telemetry` 时不初始化 SDK、导出线程或遥测网络请求；开启后默认每分钟导出，最低间隔 10 秒、超时 5 秒、指标基数上限 64。配置 trace 或通用 OTLP endpoint 后才创建 trace exporter，默认父级继承、根 trace 采样 5%；支持 `parentbased_traceidratio`、`always_off` 和 `always_on`。span 队列最多 256、每批 64，满队列丢弃遥测而不阻塞真实结果落盘和补传。
 
 | 指标 | 用途 |
 | --- | --- |
-| `probe.checks`, `probe.check.duration` | 探测数、延迟，按 method、up 与 stage 区分 |
-| `probe.icmp.duration`, `probe.certificate.remaining` | ICMP RTT（ms）与证书剩余有效期（天），仅有对应样本时记录 |
-| `probe.uploads`, `probe.upload.duration`, `probe.upload.bytes` | 推送成功率、耗时与实际压缩后字节数 |
-| `probe.queue.results`, `probe.queue.bytes` | 未确认积压 |
-| `probe.config.failures` | 配置获取失败 |
-| `probe.runtime.heap`, `probe.runtime.goroutines`, `probe.runtime.gc.cpu` | Go 堆、协程数、GC CPU 时间 |
+| `probe.process.cpu`, `probe.process.memory.peak` | 进程用户/内核 CPU 累计秒数；Linux/macOS/FreeBSD 的峰值 RSS，Windows 提供 CPU |
+| `probe.runtime.heap`, `memory`, `allocations`, `frees`, `goroutines`, `gomaxprocs`, `gc.cycles`, `gc.cpu`, `user.cpu`, `scavenge.cpu`, `uptime` | Go 运行内存、分配、并发、GC 和运行时间；均以 `probe.runtime.` 为前缀 |
+| `probe.checks`, `probe.check.duration`, `probe.checks.active` | 执行吞吐、执行耗时和当前并发；不含目标可达性、阶段或证书状态 |
+| `probe.operations`, `probe.operation.duration`, `probe.config.failures` | 配置同步、完整执行、队列读/写和 ACK 的数量、失败及耗时 |
+| `probe.uploads`, `probe.upload.duration`, `probe.upload.bytes` | 批次上传成功/失败、耗时与压缩后的网络字节数 |
+| `probe.queue.results`, `probe.queue.bytes`, `probe.queue.oldest.age`, `probe.storage.bytes`, `probe.storage.limit` | 积压、最旧结果年龄、bbolt 数据库占用及预算 |
 
-指标自动附带服务端分配的 `probe.id`，区分多个探针；支持 `OTEL_RESOURCE_ATTRIBUTES` 定制部署标签。不在指标属性中放 URL、错误正文或监控 ID。遥测不成功不会阻断探测和补传。只需在线性功能时，可以构建 `nootel` 版本，彻底移除遥测 SDK；该版本收到 `--telemetry` 会明确报错。
+Span 覆盖 `check.execute → queue.append`、`config.refresh → receiver.GET` 和 `upload.batch → receiver.POST → Worker → Coordinator → D1`，以及本地 `queue.ack`。接收端请求携带 W3C `traceparent`；探测目标不接收内部追踪头。断网队列中的原始结果与批次哈希保持不变：异步执行与后续补传是独立 trace，不伪造它们之间的父子关系。`trace_id`、`span_id`、父 span ID 存在于 tracing 数据及指标 exemplar，不能作为指标标签。默认不导出目标可达性或错误阶段指标；状态站仍保留完整监控结果。
+
+OpenObserve v1.0.4 使用独立的组织 Ingestion Token，Basic 凭据为 `组织 ID:令牌`（如 `default:o2oi_...`）。metrics 与 traces 入口分别为 `/api/<组织>/v1/metrics`、`/api/<组织>/v1/traces`。`OTEL_EXPORTER_OTLP_HEADERS` 的值需 URL 编码。写入令牌访问查询接口返回 401 属于预期行为，探针无需查询或管理权限。不要将管理员密码配置到探针。见 [官方令牌测试](https://github.com/openobserve/openobserve/blob/v1.0.4/tests/api-testing/tests/orgs/test_ingestion_tokens.py)。
+
+指标附带 `probe.id`，支持 `OTEL_RESOURCE_ATTRIBUTES` 设置部署标签。URL、监控 ID、认证头、请求/响应正文和原始错误不进入指标或应用 span。`nootel` 构建彻底移除 SDK。云端 SRE 指标与追踪见 [服务端说明](https://github.com/WhereAreBugs/UptimeFlare-Distributed/blob/main/docs/sre-observability.md)。
 
 ## 构建、验证与部署
 
