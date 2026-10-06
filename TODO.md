@@ -204,3 +204,17 @@
 - [x] 与主站相同的 144 个五分钟色块、90 天每日色块、延迟／可用率折线切换，缺失和失败延迟断点，手机合并区间及页内三项详情。
 - [x] Go 竞态／无遥测测试、前端统计测试、真实进程断网／ACK／重启及 390px 浏览器验证。
 - [x] 提交 0f21ef2、升级两台实机并核对原待上传数据和配置完整保留。
+
+
+## SRE 运行遥测与栈追踪（2026-10-06）
+
+- [x] 指标聚焦探针/Worker 运行，停止新可达性、故障阶段和证书状态的遥测导出；状态站历史保留。
+- [x] Go 进程 CPU、峰值 RSS、Go 内存/GC/协程、吞吐/并发、配置同步、队列/数据库和上传开销。
+- [x] Worker/Cron/Coordinator/Regional 调用与耗时、D1 实际行数、KV/RPC、提交等待、遥测失败及丢弃。
+- [x] W3C context 与 OTLP traces；真实两台上传的父子链贯通 Go→Worker→RPC→Coordinator→D1。
+- [x] 有界缓冲、一分钟指标聚合、5% ParentBased 采样、gzip、5 秒超时与关闭开关；两台升级 f0d45d6，原队列/配置及指定暂停保留。
+- [x] 普通 Worker 的既定出站入口返回 307，启用既有 Coordinator 的有界无存储转发；额外 RPC 可观测，不新增 D1/KV/DO 遥测存储。
+- [x] Go 跨平台 CI、212 项 Worker 回归、真实 RPC 导出与生产后端新指标/完整 trace 验收。
+- [ ] Cloudflare 原生 CPU/平台超限结果导出：当前 Token 缺少 Workers Observability 编辑权限，等待用户补充；墙钟耗时不当作 CPU。
+
+运行说明：[SRE 遥测](UptimeFlare/docs/sre-observability.md)。
