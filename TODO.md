@@ -218,3 +218,16 @@
 - [ ] Cloudflare 原生 CPU/平台超限结果导出：当前 Token 缺少 Workers Observability 编辑权限，等待用户补充；墙钟耗时不当作 CPU。
 
 运行说明：[SRE 遥测](UptimeFlare/docs/sre-observability.md)。
+
+## KV 与 Worker 资源优化（2026-10-11）
+
+- [x] 默认五分钟发布、内容指纹跳过及十分钟心跳；保留短间隔目标两分钟发布和独立失联边界。
+- [x] 既有 D1 控制键统一限制两个 KV 键的日预算，失败预留计入预算；有界故障转换/恢复提前发布，不增加结果存储。
+- [x] KV 冷缓存合并、浏览器合理缓存、公开历史按配置版本缓存及并发上限。
+- [x] 已验证公开构建静态资源直达 Assets；保护/缺失元数据构建继续全路径鉴权。
+- [x] 降低非必要 Cron 清理与无通知评估；222 项 Worker、42 项客户端/路由、20 项部署测试及五类产物验收通过。
+- [x] 提交并自动部署 `37a7d29`，100% 流量；生产配置/暂停/绑定指纹、200/401、三探针真实新结果及预算控制键通过。
+- [x] 删除两个替代 Worker 版本，核实唯一活动版本与当前构建；保留真实队列及活动资源。
+- [ ] 本机 SSH 恢复后复核两台探针的新 ACK 与 OpenObserve 中新版 Worker 运行指标；当前 SSH agent 无已解锁密钥，后端 SSH 连接关闭。
+
+策略与预算：[KV 资源预算](UptimeFlare/docs/kv-resource-budget.md)。部署与生产检查：[生产报告](UptimeFlare/docs/refactor-production.md)。
